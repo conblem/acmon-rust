@@ -1,0 +1,23 @@
+[package]
+name = "acmon"
+version = "0.1.0"
+edition = "2018"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1", features = ["macros"] }
+sqlx = { version = "0.5", features = ["runtime-tokio-rustls", "any", "chrono"] }
+serde = "1"
+serde_yaml = "0.8"
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["std", "alloc"] }
+hyper = { version = "0.14", default-features = false, features = ["server", "http1", "stream", "runtime", "client"] }
+tower = { version = "0.4", default-features = false, features = ["limit"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.2"
+futures-util = "0.3"
+
+[features]
+default = ["postgres"]
+postgres = ["sqlx/postgres"]
