@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Error};
 use async_trait::async_trait;
+use hyper::body;
 use hyper::client::HttpConnector;
 use hyper::header::HeaderName;
 use hyper::{Body, Client, Request};
@@ -7,6 +8,9 @@ use serde::Serialize;
 use std::any::Any;
 
 use super::{AcmeServer, AcmeServerBuilder, Connect, SignedRequest};
+use hyper_rustls::HttpsConnector;
+
+use super::dto::ApiDirectory;
 
 const REPLAY_NONCE_HEADER: &str = "replay-nonce";
 
@@ -28,17 +32,16 @@ impl Endpoint {
     }
 }
 
-pub(crate) struct DirectAcmeServerBuilder<C = HttpConnector> {
+pub(crate) struct DirectAcmeServerBuilder<C = HttpsConnector<HttpConnector>> {
     endpoint: Endpoint,
     connector: Option<C>,
 }
 
 impl<C> DirectAcmeServerBuilder<C> {
-    pub(crate) fn connector<NC>(self, connector: NC) -> DirectAcmeServerBuilder<NC> {
-        DirectAcmeServerBuilder {
-            endpoint: self.endpoint,
-            connector: Some(connector),
-        }
+    pub(crate) fn connector(&mut self, connector: C) -> &mut Self {
+        self.connector = Some(connector);
+
+        self
     }
 
     pub(crate) fn le_staging(&mut self) -> &mut Self {
@@ -63,22 +66,27 @@ impl<C: Connect> AcmeServerBuilder for DirectAcmeServerBuilder<C> {
         let connector = self
             .connector
             .take()
-            .ok_or_else(|| anyhow!("No client configured"))?;
+            .ok_or_else(|| anyhow!("No connector configured"))?;
         let client = Client::builder().build(connector);
 
         let req = Request::get(self.endpoint.to_str()).body(Body::empty())?;
-        let _directory = client.request(req).await?;
+        let mut res = client.request(req).await?;
+        let body = body::to_bytes(res.body_mut()).await?;
+
+        let directory = serde_json::from_slice(body.as_ref())?;
 
         Ok(DirectAcmeServer {
             client,
             replay_nonce_header,
+            directory,
         })
     }
 }
 
-pub(crate) struct DirectAcmeServer<C = HttpConnector> {
+pub(crate) struct DirectAcmeServer<C = HttpsConnector<HttpConnector>> {
     client: Client<C>,
     replay_nonce_header: HeaderName,
+    directory: ApiDirectory,
 }
 
 impl<C: 'static> DirectAcmeServer<C> {
@@ -89,8 +97,9 @@ impl<C: 'static> DirectAcmeServer<C> {
         };
 
         // set default http connector if generics match
+        // gets optimized away in release builds
         if let Some(builder) = <dyn Any>::downcast_mut::<DirectAcmeServerBuilder>(&mut builder) {
-            builder.connector = Some(HttpConnector::new());
+            builder.connector = Some(HttpsConnector::with_webpki_roots());
         }
 
         builder
@@ -102,7 +111,7 @@ impl<C: Connect> AcmeServer for DirectAcmeServer<C> {
     type Error = Error;
 
     async fn get_nonce(&self) -> Result<String, Self::Error> {
-        let req = Request::head("test").body(Body::empty())?;
+        let req = Request::head(&self.directory.new_nonce).body(Body::empty())?;
         let mut res = self.client.request(req).await?;
 
         let nonce = res

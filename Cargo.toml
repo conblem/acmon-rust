@@ -11,12 +11,15 @@ serde = "1"
 serde_yaml = "0.8"
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["std", "alloc"] }
-hyper = { version = "0.14", default-features = false, features = ["server", "http1", "stream", "runtime", "client"] }
+# http2 is only enabled because hyper-tls forces this feature https://github.com/rustls/hyper-rustls/issues/143
+hyper = { version = "0.14", default-features = false, features = ["server", "http1", "http2", "stream", "runtime", "client"] }
 tower = { version = "0.4", default-features = false, features = ["limit"] }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = "0.2"
 futures-util = "0.3"
+hyper-rustls = {version = "0.22", default-features = false, features = ["webpki-tokio"]}
+serde_json = "1"
 
 [features]
 default = ["postgres"]

@@ -2,30 +2,16 @@ use anyhow::Error;
 use async_trait::async_trait;
 use serde::Serialize;
 use std::marker::PhantomData;
+use std::ops::{Deref, DerefMut};
 
 use super::direct::{DirectAcmeServer, DirectAcmeServerBuilder};
 use super::{AcmeServer, AcmeServerBuilder, SignedRequest};
-use std::ops::{Deref, DerefMut};
 
 pub(crate) struct ProxyAcmeServerBuilder<B = DirectAcmeServerBuilder>(B);
 
 impl<B> ProxyAcmeServerBuilder<B> {
     fn inner<BN>(self, inner: BN) -> ProxyAcmeServerBuilder<BN> {
         ProxyAcmeServerBuilder(inner)
-    }
-}
-
-impl<B> Deref for ProxyAcmeServerBuilder<B> {
-    type Target = B;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<B> DerefMut for ProxyAcmeServerBuilder<B> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
     }
 }
 
@@ -43,6 +29,20 @@ impl<A: AcmeServer, B: AcmeServerBuilder<Server = A>> AcmeServerBuilder
             inner,
             builder: PhantomData,
         })
+    }
+}
+
+impl<B> Deref for ProxyAcmeServerBuilder<B> {
+    type Target = B;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<B> DerefMut for ProxyAcmeServerBuilder<B> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 
