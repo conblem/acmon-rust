@@ -6,6 +6,7 @@ use tracing::Instrument;
 use server::{AcmeServer, AcmeServerBuilder, ProxyAcmeServer};
 
 mod config;
+mod http;
 mod server;
 
 #[tracing::instrument(err)]

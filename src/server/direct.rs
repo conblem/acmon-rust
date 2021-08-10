@@ -1,16 +1,12 @@
 use anyhow::{anyhow, Error};
 use async_trait::async_trait;
 use hyper::body;
-use hyper::client::HttpConnector;
 use hyper::header::HeaderName;
 use hyper::{Body, Client, Request};
 use serde::Serialize;
-use std::any::Any;
-
-use super::{AcmeServer, AcmeServerBuilder, Connect, SignedRequest};
-use hyper_rustls::HttpsConnector;
 
 use super::dto::ApiDirectory;
+use super::{AcmeServer, AcmeServerBuilder, Connect, SignedRequest};
 
 const REPLAY_NONCE_HEADER: &str = "replay-nonce";
 
@@ -32,7 +28,7 @@ impl Endpoint {
     }
 }
 
-pub(crate) struct DirectAcmeServerBuilder<C = HttpsConnector<HttpConnector>> {
+pub(crate) struct DirectAcmeServerBuilder<C> {
     endpoint: Endpoint,
     connector: Option<C>,
 }
@@ -67,6 +63,7 @@ impl<C: Connect> AcmeServerBuilder for DirectAcmeServerBuilder<C> {
             .connector
             .take()
             .ok_or_else(|| anyhow!("No connector configured"))?;
+
         let client = Client::builder().build(connector);
 
         let req = Request::get(self.endpoint.to_str()).body(Body::empty())?;
@@ -83,32 +80,23 @@ impl<C: Connect> AcmeServerBuilder for DirectAcmeServerBuilder<C> {
     }
 }
 
-pub(crate) struct DirectAcmeServer<C = HttpsConnector<HttpConnector>> {
+pub(crate) struct DirectAcmeServer<C> {
     client: Client<C>,
     replay_nonce_header: HeaderName,
     directory: ApiDirectory,
 }
 
-impl<C: 'static> DirectAcmeServer<C> {
-    pub(crate) fn builder() -> DirectAcmeServerBuilder<C> {
-        let mut builder = DirectAcmeServerBuilder {
-            endpoint: Endpoint::LetsEncrypt,
-            connector: None,
-        };
-
-        // set default http connector if generics match
-        // gets optimized away in release builds
-        if let Some(builder) = <dyn Any>::downcast_mut::<DirectAcmeServerBuilder>(&mut builder) {
-            builder.connector = Some(HttpsConnector::with_webpki_roots());
-        }
-
-        builder
-    }
-}
-
 #[async_trait]
 impl<C: Connect> AcmeServer for DirectAcmeServer<C> {
     type Error = Error;
+    type Builder = DirectAcmeServerBuilder<C>;
+
+    fn builder() -> Self::Builder {
+        DirectAcmeServerBuilder {
+            endpoint: Endpoint::LetsEncrypt,
+            connector: None,
+        }
+    }
 
     async fn get_nonce(&self) -> Result<String, Self::Error> {
         let req = Request::head(&self.directory.new_nonce).body(Body::empty())?;
@@ -131,5 +119,28 @@ impl<C: Connect> AcmeServer for DirectAcmeServer<C> {
         let _req = Request::post("").body(req)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hyper::client::HttpConnector;
+    use hyper_rustls::HttpsConnector;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn builder_works() {
+        let server = DirectAcmeServer::builder()
+            .connector(HttpConnector::new())
+            .build()
+            .await
+            .unwrap();
+
+        let server = DirectAcmeServer::builder()
+            .connector(HttpsConnector::with_webpki_roots())
+            .build()
+            .await
+            .unwrap();
     }
 }
