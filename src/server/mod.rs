@@ -22,8 +22,6 @@ pub(crate) trait AcmeServer: Send + Sync {
     type Error: Into<Error> + Send;
     type Builder: AcmeServerBuilder<Server = Self>;
 
-    fn builder() -> Self::Builder;
-
     async fn get_nonce(&self) -> Result<String, Self::Error>;
 
     async fn create_account<S: Serialize + Send>(
@@ -41,4 +39,15 @@ pub(crate) trait ToAmceServerBuilder {
     type Builder: AcmeServerBuilder<Server = Self::Server>;
 
     fn builder() -> Self::Builder;
+}
+
+impl<A: AcmeServer<Builder = B>, B: AcmeServerBuilder<Server = A> + Default> ToAmceServerBuilder
+    for A
+{
+    type Server = A;
+    type Builder = B;
+
+    fn builder() -> Self::Builder {
+        B::default()
+    }
 }

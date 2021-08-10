@@ -53,6 +53,15 @@ impl<C> DirectAcmeServerBuilder<C> {
     }
 }
 
+impl<C> Default for DirectAcmeServerBuilder<C> {
+    fn default() -> Self {
+        DirectAcmeServerBuilder {
+            connector: None,
+            endpoint: Endpoint::LetsEncrypt,
+        }
+    }
+}
+
 #[async_trait]
 impl<C: Connect> AcmeServerBuilder for DirectAcmeServerBuilder<C> {
     type Server = DirectAcmeServer<C>;
@@ -91,13 +100,6 @@ impl<C: Connect> AcmeServer for DirectAcmeServer<C> {
     type Error = Error;
     type Builder = DirectAcmeServerBuilder<C>;
 
-    fn builder() -> Self::Builder {
-        DirectAcmeServerBuilder {
-            endpoint: Endpoint::LetsEncrypt,
-            connector: None,
-        }
-    }
-
     async fn get_nonce(&self) -> Result<String, Self::Error> {
         let req = Request::head(&self.directory.new_nonce).body(Body::empty())?;
         let mut res = self.client.request(req).await?;
@@ -128,6 +130,7 @@ mod tests {
     use hyper_rustls::HttpsConnector;
 
     use super::*;
+    use crate::server::ToAmceServerBuilder;
 
     #[tokio::test]
     async fn builder_works() {

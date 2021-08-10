@@ -4,10 +4,10 @@ use hyper_rustls::HttpsConnector;
 use serde::Serialize;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
+use warp::hyper::client::HttpConnector;
 
 use super::direct::{DirectAcmeServer, DirectAcmeServerBuilder};
 use super::{AcmeServer, AcmeServerBuilder, SignedRequest};
-use warp::hyper::client::HttpConnector;
 
 pub(crate) struct ProxyAcmeServerBuilder<B = DirectAcmeServerBuilder<HttpsConnector<HttpConnector>>>(
     B,
@@ -27,6 +27,14 @@ impl<A: AcmeServer<Builder = B>, B: AcmeServerBuilder<Server = A>> AcmeServerBui
             inner,
             builder: PhantomData,
         })
+    }
+}
+
+impl<A: AcmeServer<Builder = B>, B: AcmeServerBuilder<Server = A> + Default> Default
+    for ProxyAcmeServerBuilder<B>
+{
+    fn default() -> Self {
+        ProxyAcmeServerBuilder(B::default())
     }
 }
 
@@ -54,7 +62,7 @@ pub(crate) struct ProxyAcmeServer<
 
 impl ProxyAcmeServer {
     pub(crate) fn builder() -> ProxyAcmeServerBuilder {
-        let mut builder = DirectAcmeServer::builder();
+        let mut builder = DirectAcmeServerBuilder::default();
         builder.connector(HttpsConnector::with_webpki_roots());
 
         ProxyAcmeServerBuilder(builder)
@@ -67,10 +75,6 @@ impl<A: AcmeServer<Builder = B>, B: AcmeServerBuilder<Server = A>> AcmeServer
 {
     type Error = Error;
     type Builder = ProxyAcmeServerBuilder<B>;
-
-    fn builder() -> Self::Builder {
-        ProxyAcmeServerBuilder(A::builder())
-    }
 
     async fn get_nonce(&self) -> Result<String, Self::Error> {
         let nonce = self.inner.get_nonce().await;
