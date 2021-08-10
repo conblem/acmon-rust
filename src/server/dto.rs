@@ -1,8 +1,9 @@
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::convert::TryInto;
+use std::convert::{TryInto, TryFrom};
 use std::fmt;
 use std::marker::PhantomData;
+use hyper::http::uri::InvalidUri;
 
 const fn default_false() -> bool {
     false
@@ -32,6 +33,23 @@ impl<P> Serialize for Payload<P> {
 #[derive(Debug)]
 pub(crate) struct Uri(hyper::Uri);
 
+impl TryFrom<String> for Uri {
+    type Error = InvalidUri;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Ok(Uri(value.try_into()?))
+    }
+}
+
+impl TryFrom<&str> for Uri {
+    type Error = InvalidUri;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Ok(Uri(value.try_into()?))
+    }
+}
+
+
 impl Into<hyper::Uri> for &Uri {
     fn into(self) -> hyper::Uri {
         self.0.clone()
@@ -60,8 +78,8 @@ impl<'de> Visitor<'de> for UriVisitor {
     where
         E: de::Error,
     {
-        match v.parse() {
-            Ok(uri) => Ok(Uri(uri)),
+        match v.try_into() {
+            Ok(uri) => Ok(uri),
             Err(err) => Err(E::custom(err)),
         }
     }
@@ -71,7 +89,7 @@ impl<'de> Visitor<'de> for UriVisitor {
         E: de::Error,
     {
         match v.try_into() {
-            Ok(uri) => Ok(Uri(uri)),
+            Ok(uri) => Ok(uri),
             Err(err) => Err(E::custom(err)),
         }
     }

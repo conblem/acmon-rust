@@ -126,24 +126,55 @@ impl<C: Connect> AcmeServer for DirectAcmeServer<C> {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Result;
     use hyper::client::HttpConnector;
     use hyper_rustls::HttpsConnector;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::matchers::{method, path};
+    use std::convert::TryInto;
 
     use super::*;
     use crate::server::ToAmceServerBuilder;
 
+    fn generate_directory(base: &str) -> Result<ApiDirectory> {
+        Ok(ApiDirectory {
+            new_nonce: format!("{}/new_nonce", base).try_into()?,
+            new_account: format!("{}/new_account", base).try_into()?,
+            key_change: format!("{}/key_change", base).try_into()?,
+            meta: None,
+            new_authz: None,
+            new_order: format!("{}/new_order", base).try_into()?,
+            revoke_cert: format!("{}/new_order", base).try_into()?,
+        })
+    }
+
     #[tokio::test]
-    async fn builder_works() {
-        let server = DirectAcmeServer::builder()
-            .connector(HttpConnector::new())
-            .build()
-            .await
-            .unwrap();
+    async fn builder_works() -> Result<()> {
+        let mock_server = MockServer::start().await;
+        let base = mock_server.uri();
+        let directory = generate_directory(&base)?;
+
+        Mock::given(method("GET"))
+            .and(path("/directory"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&directory))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("HEAD"))
+            .and(path("/new_nonce"))
+            .respond_with(ResponseTemplate::new(200).insert_header(REPLAY_NONCE_HEADER, "iamnonce"))
+            .mount(&mock_server)
+            .await;
 
         let server = DirectAcmeServer::builder()
-            .connector(HttpsConnector::with_webpki_roots())
+            .connector(HttpConnector::new())
+            .url(format!("{}/directory", &base))
             .build()
-            .await
-            .unwrap();
+            .await?;
+
+        let actual = server.get_nonce().await?;
+        assert_eq!("iamnonce", actual);
+
+        Ok(())
     }
 }
