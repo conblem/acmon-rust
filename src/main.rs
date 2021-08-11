@@ -8,6 +8,7 @@ use server::{AcmeServer, AcmeServerBuilder, ProxyAcmeServer};
 mod config;
 mod http;
 mod server;
+mod limiter;
 
 #[tracing::instrument(err)]
 fn main() -> Result<()> {

@@ -24,6 +24,8 @@ warp = { version = "0.3", default-features = false }
 
 [dev-dependencies]
 wiremock = "0.5"
+cached = { version = "0.24", default-features = false, features = ["async"]}
+parking_lot = "0.11"
 
 [features]
 default = ["postgres"]
