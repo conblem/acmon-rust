@@ -128,7 +128,6 @@ impl<C: Connect> AcmeServer for DirectAcmeServer<C> {
 mod tests {
     use anyhow::Result;
     use hyper::client::HttpConnector;
-    use hyper_rustls::HttpsConnector;
     use std::convert::TryInto;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};

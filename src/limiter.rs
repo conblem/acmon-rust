@@ -3,6 +3,7 @@ use std::time::Duration;
 #[derive(Clone)]
 struct Config {
     window: Duration,
+    resolution: u16,
     max: u16,
 }
 
@@ -14,7 +15,6 @@ mod tests {
     use futures_util::FutureExt;
     use parking_lot::Mutex;
     use std::error::Error;
-    use std::marker::PhantomData;
     use std::sync::Arc;
     use std::task::{Context, Poll};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,6 +24,7 @@ mod tests {
     use tower::Service;
 
     use super::*;
+    use crate::limiter::tests::LimiterError::Ratelimited;
 
     #[derive(Error, Debug)]
     pub enum LimiterError<E: Error> {
@@ -34,63 +35,35 @@ mod tests {
         Underlying(#[from] E),
     }
 
-    struct SlidingMemoryLimiter<S, Request> {
+    struct SlidingMemoryLimiter<S> {
         service: S,
         config: Config,
-        phantom: PhantomData<Request>,
         mutex: Arc<Mutex<Option<TimedSizedCache<u64, u16>>>>,
         semaphore: PollSemaphore,
         data: Option<TimedSizedCache<u64, u16>>,
     }
 
-    impl<S, Request> SlidingMemoryLimiter<S, Request>
-    where
-        S: Service<Request>,
-        S::Error: Error,
-    {
+    impl<S> SlidingMemoryLimiter<S> {
         fn new(service: S, config: Config) -> Self {
-            // calculate size somehow
+            // todo: calculate size and resolution somehow
             let mutex = TimedSizedCache::with_size_and_lifespan(256, config.window.as_secs());
             let semaphore = Arc::new(Semaphore::new(1));
 
             SlidingMemoryLimiter {
                 service,
                 config,
-                phantom: PhantomData,
                 mutex: Arc::new(Mutex::new(Some(mutex))),
                 semaphore: PollSemaphore::new(semaphore),
                 data: None,
             }
         }
-
-        fn check(
-            &mut self,
-            data: &mut TimedSizedCache<u64, u16>,
-        ) -> Result<(), <Self as Service<Request>>::Error> {
-            let sum: u16 = data.value_order().map(|val| val.1).sum();
-            if sum < self.config.max {
-                return Ok(());
-            }
-
-            let current_min = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("Time went backwards")
-                .as_secs()
-                / 60;
-
-            let bucket = data.cache_get_or_set_with(current_min, || 0);
-            *bucket += 1;
-
-            return Err(LimiterError::Ratelimited);
-        }
     }
 
-    impl<S: Clone, Request> Clone for SlidingMemoryLimiter<S, Request> {
+    impl<S: Clone> Clone for SlidingMemoryLimiter<S> {
         fn clone(&self) -> Self {
             SlidingMemoryLimiter {
                 service: self.service.clone(),
                 config: self.config.clone(),
-                phantom: PhantomData,
                 mutex: Arc::clone(&self.mutex),
                 semaphore: self.semaphore.clone(),
                 data: None,
@@ -100,7 +73,7 @@ mod tests {
 
     // if Service::call has not been run but limiter gets dropped we clean up to remove the possibility of a deadlock
     // deadlocks are still possible if you run poll_ready and then leak the limiter
-    impl<S, Request> Drop for SlidingMemoryLimiter<S, Request> {
+    impl<S> Drop for SlidingMemoryLimiter<S> {
         fn drop(&mut self) {
             if let Some(data) = self.data.take() {
                 *self.mutex.lock() = Some(data);
@@ -109,7 +82,7 @@ mod tests {
         }
     }
 
-    impl<S, Request> Service<Request> for SlidingMemoryLimiter<S, Request>
+    impl<S, Request> Service<Request> for SlidingMemoryLimiter<S>
     where
         S: Service<Request>,
         S::Error: Error,
@@ -127,19 +100,30 @@ mod tests {
 
                 let mut guard = self.mutex.lock();
                 let mut data = guard.take().expect("cannot be empty");
-                drop(guard);
+
+                let sum: u16 = data.value_order().map(|val| val.1).sum();
+                if sum >= self.config.max {
+                    *guard = Some(data);
+                    return Poll::Ready(Err(LimiterError::Ratelimited));
+                }
+
                 permit.forget();
-
-                self.check(&mut data)?;
-
-                self.data = Some(data);
             }
 
             self.service.poll_ready(cx).map_err(LimiterError::from)
         }
 
         fn call(&mut self, req: Request) -> Self::Future {
-            let data = self.data.take().expect("poll ready not called");
+            let mut data = self.data.take().expect("poll ready not called");
+
+            // todo: calculate resolution
+            let current_min = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_secs()
+                / self.config.resolution as u64;
+            let bucket = data.cache_get_or_set_with(current_min, || 0);
+            *bucket += 1;
 
             *self.mutex.lock() = Some(data);
             self.semaphore.add_permits(1);
