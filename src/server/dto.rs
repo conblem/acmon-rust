@@ -1,9 +1,9 @@
+use hyper::http::uri::InvalidUri;
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::convert::{TryInto, TryFrom};
+use std::convert::{TryFrom, TryInto};
 use std::fmt;
 use std::marker::PhantomData;
-use hyper::http::uri::InvalidUri;
 
 const fn default_false() -> bool {
     false
@@ -48,7 +48,6 @@ impl TryFrom<&str> for Uri {
         Ok(Uri(value.try_into()?))
     }
 }
-
 
 impl Into<hyper::Uri> for &Uri {
     fn into(self) -> hyper::Uri {

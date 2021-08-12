@@ -26,6 +26,7 @@ warp = { version = "0.3", default-features = false }
 wiremock = "0.5"
 cached = { version = "0.24", default-features = false, features = ["async"]}
 parking_lot = "0.11"
+tokio-util = "0.6"
 
 [features]
 default = ["postgres"]

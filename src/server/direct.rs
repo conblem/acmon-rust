@@ -129,9 +129,9 @@ mod tests {
     use anyhow::Result;
     use hyper::client::HttpConnector;
     use hyper_rustls::HttpsConnector;
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-    use wiremock::matchers::{method, path};
     use std::convert::TryInto;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
     use crate::server::ToAmceServerBuilder;
