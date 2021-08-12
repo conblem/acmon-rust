@@ -24,7 +24,6 @@ mod tests {
     use tower::Service;
 
     use super::*;
-    use crate::limiter::tests::LimiterError::Ratelimited;
 
     #[derive(Error, Debug)]
     pub enum LimiterError<E: Error> {
@@ -96,10 +95,10 @@ mod tests {
 
         fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
             if self.data.is_none() {
-                let permit = ready!(self.semaphore.poll_acquire(cx)).expect("semaphore closed");
+                let permit = ready!(self.semaphore.poll_acquire(cx)).expect("semaphore is never closed");
 
                 let mut guard = self.mutex.lock();
-                let mut data = guard.take().expect("cannot be empty");
+                let data = guard.take().expect("cannot be empty");
 
                 let sum: u16 = data.value_order().map(|val| val.1).sum();
                 if sum >= self.config.max {
@@ -107,6 +106,7 @@ mod tests {
                     return Poll::Ready(Err(LimiterError::Ratelimited));
                 }
 
+                self.data = Some(data);
                 permit.forget();
             }
 
