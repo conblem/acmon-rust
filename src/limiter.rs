@@ -10,7 +10,7 @@ struct Config {
 #[cfg(test)]
 mod tests {
     use cached::{Cached, TimedSizedCache};
-    use futures_util::future::Map;
+    use futures_util::future::{Map, poll_fn};
     use futures_util::ready;
     use futures_util::FutureExt;
     use parking_lot::Mutex;
@@ -86,6 +86,64 @@ mod tests {
             self.semaphore.add_permits(1);
         }
     }
+
+    #[tokio::test]
+    async fn try_lock() {
+        let mut lock = OwnedMutex::new(0 as u8);
+        let mut guard = poll_fn(|cx| { lock.poll_lock(cx) }).await;
+        *guard += 1;
+        drop(guard);
+
+        let guard = poll_fn(|cx| { lock.poll_lock(cx) }).await;
+        assert_eq!(1, *guard)
+    }
+
+    #[tokio::test]
+    async fn should_deadlock() {
+        let mut lock = OwnedMutex::new(0 as u8);
+        let mut guard = poll_fn(|cx| { lock.poll_lock(cx) }).await;
+        *guard += 1;
+
+        let guard = poll_fn(|cx| { lock.poll_lock(cx) });
+        tokio::pin!(guard);
+        let timeout = tokio::time::sleep(Duration::from_millis(100));
+        tokio::pin!(timeout);
+
+        tokio::select! {
+            _ = guard => {
+                panic!("should be deadlocked");
+            }
+            _ = timeout => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn try_lock_multiple_threads() {
+        let mut lock = OwnedMutex::new(0 as u8);
+        let mut guard = poll_fn(|cx| { lock.poll_lock(cx) }).await;
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            *guard += 1;
+        });
+
+        let guard = poll_fn(|cx| { lock.poll_lock(cx) });
+        tokio::pin!(guard);
+        let sleep = tokio::time::sleep(Duration::from_millis(50));
+        tokio::pin!(sleep);
+
+        tokio::select! {
+            _ = guard => {
+                panic!("guard should not be unlocked")
+            }
+            _ = sleep => {
+            }
+        }
+
+        let guard = poll_fn(|cx| { lock.poll_lock(cx) }).await;
+        assert_eq!(1, *guard);
+    }
+
 
     #[derive(Error, Debug)]
     pub enum LimiterError<E: Error> {
