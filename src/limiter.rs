@@ -15,6 +15,7 @@ mod tests {
     use futures_util::FutureExt;
     use parking_lot::Mutex;
     use std::error::Error;
+    use std::ops::{Deref, DerefMut};
     use std::sync::Arc;
     use std::task::{Context, Poll};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,6 +25,67 @@ mod tests {
     use tower::Service;
 
     use super::*;
+
+    #[derive(Clone)]
+    struct OwnedMutex<T> {
+        mutex: Arc<Mutex<Option<T>>>,
+        semaphore: PollSemaphore,
+    }
+
+    impl<T> OwnedMutex<T> {
+        fn new(val: T) -> Self {
+            let semaphore = Arc::new(Semaphore::new(1));
+            let mutex = Mutex::new(Some(val));
+
+            OwnedMutex {
+                mutex: Arc::new(mutex),
+                semaphore: PollSemaphore::new(semaphore),
+            }
+        }
+
+        fn poll_lock(&mut self, cx: &mut Context<'_>) -> Poll<OwnedMutexGuard<T>> {
+            let permit = ready!(self.semaphore.poll_acquire(cx)).expect("cannot be closed");
+
+            let data = self.mutex.lock().take();
+            debug_assert!(data.is_some(), "cannot be empty if we have permit");
+
+            permit.forget();
+
+            Poll::Ready(OwnedMutexGuard {
+                mutex: self.mutex.clone(),
+                semaphore: self.semaphore.clone(),
+                data,
+            })
+        }
+    }
+
+    struct OwnedMutexGuard<T> {
+        mutex: Arc<Mutex<Option<T>>>,
+        semaphore: PollSemaphore,
+        data: Option<T>,
+    }
+
+    impl<T> Deref for OwnedMutexGuard<T> {
+        type Target = T;
+
+        fn deref(&self) -> &Self::Target {
+            self.data.as_ref().expect("cannot be empty")
+        }
+    }
+
+    impl<T> DerefMut for OwnedMutexGuard<T> {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            self.data.as_mut().expect("cannot be empty")
+        }
+    }
+
+    impl<T> Drop for OwnedMutexGuard<T> {
+        fn drop(&mut self) {
+            debug_assert!(self.data.is_some(), "data is some as we never take it out");
+            *self.mutex.lock() = self.data.take();
+            self.semaphore.add_permits(1);
+        }
+    }
 
     #[derive(Error, Debug)]
     pub enum LimiterError<E: Error> {
@@ -37,23 +99,20 @@ mod tests {
     struct SlidingMemoryLimiter<S> {
         service: S,
         config: Config,
-        mutex: Arc<Mutex<Option<TimedSizedCache<u64, u16>>>>,
-        semaphore: PollSemaphore,
-        data: Option<TimedSizedCache<u64, u16>>,
+        mutex: OwnedMutex<TimedSizedCache<u64, u16>>,
+        guard: Option<OwnedMutexGuard<TimedSizedCache<u64, u16>>>,
     }
 
     impl<S> SlidingMemoryLimiter<S> {
         fn new(service: S, config: Config) -> Self {
             // todo: calculate size and resolution somehow
-            let mutex = TimedSizedCache::with_size_and_lifespan(256, config.window.as_secs());
-            let semaphore = Arc::new(Semaphore::new(1));
+            let cache = TimedSizedCache::with_size_and_lifespan(256, config.window.as_secs());
 
             SlidingMemoryLimiter {
                 service,
                 config,
-                mutex: Arc::new(Mutex::new(Some(mutex))),
-                semaphore: PollSemaphore::new(semaphore),
-                data: None,
+                mutex: OwnedMutex::new(cache),
+                guard: None,
             }
         }
     }
@@ -63,20 +122,8 @@ mod tests {
             SlidingMemoryLimiter {
                 service: self.service.clone(),
                 config: self.config.clone(),
-                mutex: Arc::clone(&self.mutex),
-                semaphore: self.semaphore.clone(),
-                data: None,
-            }
-        }
-    }
-
-    // if Service::call has not been run but limiter gets dropped we clean up to remove the possibility of a deadlock
-    // deadlocks are still possible if you run poll_ready and then leak the limiter
-    impl<S> Drop for SlidingMemoryLimiter<S> {
-        fn drop(&mut self) {
-            if let Some(data) = self.data.take() {
-                *self.mutex.lock() = Some(data);
-                self.semaphore.add_permits(1);
+                mutex: self.mutex.clone(),
+                guard: None,
             }
         }
     }
@@ -94,27 +141,22 @@ mod tests {
         >;
 
         fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-            if self.data.is_none() {
-                let permit = ready!(self.semaphore.poll_acquire(cx)).expect("semaphore is never closed");
+            if self.guard.is_none() {
+                let guard = ready!(self.mutex.poll_lock(cx));
 
-                let mut guard = self.mutex.lock();
-                let data = guard.take().expect("cannot be empty");
-
-                let sum: u16 = data.value_order().map(|val| val.1).sum();
+                let sum: u16 = guard.value_order().map(|val| val.1).sum();
                 if sum >= self.config.max {
-                    *guard = Some(data);
                     return Poll::Ready(Err(LimiterError::Ratelimited));
                 }
 
-                self.data = Some(data);
-                permit.forget();
+                self.guard = Some(guard);
             }
 
             self.service.poll_ready(cx).map_err(LimiterError::from)
         }
 
         fn call(&mut self, req: Request) -> Self::Future {
-            let mut data = self.data.take().expect("poll ready not called");
+            let mut guard = self.guard.take().expect("poll ready not called");
 
             // todo: calculate resolution
             let current_min = SystemTime::now()
@@ -122,11 +164,8 @@ mod tests {
                 .expect("Time went backwards")
                 .as_secs()
                 / self.config.resolution as u64;
-            let bucket = data.cache_get_or_set_with(current_min, || 0);
+            let bucket = guard.cache_get_or_set_with(current_min, || 0);
             *bucket += 1;
-
-            *self.mutex.lock() = Some(data);
-            self.semaphore.add_permits(1);
 
             self.service.call(req).map(map_err)
         }
