@@ -20,7 +20,7 @@ mod tests {
     use std::task::{Context, Poll};
     use std::time::{SystemTime, UNIX_EPOCH};
     use thiserror::Error;
-    use tokio::sync::Semaphore;
+    use tokio::sync::{Semaphore, OwnedSemaphorePermit};
     use tokio_util::sync::PollSemaphore;
     use tower::Service;
 
@@ -44,24 +44,22 @@ mod tests {
         }
 
         fn poll_lock(&mut self, cx: &mut Context<'_>) -> Poll<OwnedMutexGuard<T>> {
-            let permit = ready!(self.semaphore.poll_acquire(cx)).expect("cannot be closed");
+            let _permit = ready!(self.semaphore.poll_acquire(cx)).expect("cannot be closed");
 
-            let data = self.mutex.lock().take();
-            debug_assert!(data.is_some(), "cannot be empty if we have permit");
-
-            permit.forget();
+            // we take out the t to hint to the compiler that the option is never empty
+            let data = self.mutex.lock().take().expect("cannot be empty if we have permit");
 
             Poll::Ready(OwnedMutexGuard {
                 mutex: self.mutex.clone(),
-                semaphore: self.semaphore.clone(),
-                data,
+                _permit,
+                data: Some(data),
             })
         }
     }
 
     struct OwnedMutexGuard<T> {
         mutex: Arc<Mutex<Option<T>>>,
-        semaphore: PollSemaphore,
+        _permit: OwnedSemaphorePermit,
         data: Option<T>,
     }
 
@@ -83,7 +81,6 @@ mod tests {
         fn drop(&mut self) {
             debug_assert!(self.data.is_some(), "data is some as we never take it out");
             *self.mutex.lock() = self.data.take();
-            self.semaphore.add_permits(1);
         }
     }
 

@@ -129,7 +129,7 @@ pub(crate) struct ApiMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_test::{assert_tokens, Token, assert_de_tokens, assert_ser_tokens};
+    use serde_test::{assert_tokens, Token};
 
     const URIS: [&'static str; 4] = [
         "https://google.com",
