@@ -30,7 +30,7 @@ impl<P> Serialize for Payload<P> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) struct Uri(hyper::Uri);
 
 impl TryFrom<String> for Uri {
@@ -124,4 +124,46 @@ pub(crate) struct ApiMeta {
     caa_identities: Vec<String>,
     #[serde(default = "default_false")]
     external_account_required: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_test::{assert_tokens, Token, assert_de_tokens, assert_ser_tokens};
+
+    const URIS: [&'static str; 4] = [
+        "https://google.com",
+        "http://google.com",
+        "https://google.com/test",
+        "https://google.com/test?hihi=was",
+    ];
+
+    #[test]
+    fn uri_try_from_str() {
+        for uri in URIS {
+            Uri::try_from(uri).unwrap();
+        }
+    }
+
+    #[test]
+    fn uri_try_from_string() {
+        for uri in URIS {
+            Uri::try_from(uri.to_string()).unwrap();
+        }
+    }
+
+    #[test]
+    fn deserialize_uri() {
+        let uri = Uri::try_from("https://google.com/").unwrap();
+        assert_tokens(&uri, &[Token::Str("https://google.com/")]);
+        assert_tokens(&uri, &[Token::String("https://google.com/")]);
+    }
+
+    #[test]
+    fn uri_into() {
+        let uri = Uri::try_from("https://google.com/").unwrap();
+        let hyper_uri: hyper::Uri = (&uri).into();
+
+        assert_eq!(uri.0, hyper_uri);
+    }
 }
