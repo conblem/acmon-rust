@@ -11,6 +11,6 @@ struct EtcdAccountRepo(Client);
 
 #[async_trait]
 impl AccountRepo for EtcdAccountRepo {
-    async fn get_account(input: &str) {
+    async fn get_account(_input: &str) {
     }
 }

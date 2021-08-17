@@ -1,6 +1,6 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use tokio::runtime::Runtime;
-use tracing::Instrument;
+use tracing::{Instrument, instrument};
 
 use server::{AcmeServer, AcmeServerBuilder, ProxyAcmeServer};
 
@@ -10,12 +10,14 @@ mod limiter;
 mod server;
 mod repo;
 
-#[tracing::instrument(err)]
+#[instrument]
 fn main() -> Result<()> {
-    // will panic if not successful
-    tracing_subscriber::fmt::init();
+    match tracing_subscriber::fmt::try_init() {
+        Err(e) => Err(anyhow!(e))?,
+        Ok(()) => {}
+    };
 
-    let config = config::load_config()?;
+    let _config = config::load_config()?;
     let runtime = Runtime::new()?;
 
     let block = async move {
