@@ -5,12 +5,11 @@ edition = "2018"
 license = "MIT"
 
 [dependencies]
-tokio = { version = "1", features = ["macros"] }
-sqlx = { version = "0.5", features = ["runtime-tokio-rustls", "any", "chrono"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+etcd-client = "0.7"
 serde = "1"
 serde_yaml = "0.8"
 async-trait = "0.1"
-chrono = { version = "0.4", default-features = false, features = ["std", "alloc"] }
 # http2 is only enabled because hyper-tls forces this feature https://github.com/rustls/hyper-rustls/issues/143
 hyper = { version = "0.14", default-features = false, features = ["server", "http1", "http2", "stream", "runtime", "client"] }
 tower = { version = "0.4", default-features = false, features = ["limit"] }
@@ -29,7 +28,3 @@ parking_lot = "0.11"
 tokio-util = "0.6"
 thiserror = "1"
 serde_test = "1"
-
-[features]
-default = ["postgres"]
-postgres = ["sqlx/postgres"]

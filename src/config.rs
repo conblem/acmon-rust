@@ -6,7 +6,7 @@ use tracing::{debug, info, info_span};
 
 #[derive(Deserialize, Debug)]
 pub struct Config {
-    pub db: String,
+    pub db: Vec<String>,
 }
 
 const DEFAULT_CONFIG_PATH: &str = "config.yaml";
@@ -20,13 +20,10 @@ pub(super) fn load_config() -> Result<Config> {
     let _enter = span.enter();
 
     let file = read(config_path)?;
-    debug!(file_lenght = file.len(), "Read file");
+    debug!(file_length = file.len(), "Read file");
 
     let config: Config = serde_yaml::from_slice(&file)?;
-    // redact db information
-    // maybe make this optional
-    let config_str = format!("{:?}", config).replace(&config.db, "******");
-    info!(config = %config_str, "Deserialized config");
+    info!(?config, "Deserialized config");
 
     Ok(config)
 }

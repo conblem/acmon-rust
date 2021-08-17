@@ -1,5 +1,4 @@
 use anyhow::Result;
-use sqlx::AnyPool;
 use tokio::runtime::Runtime;
 use tracing::Instrument;
 
@@ -9,6 +8,7 @@ mod config;
 mod http;
 mod limiter;
 mod server;
+mod repo;
 
 #[tracing::instrument(err)]
 fn main() -> Result<()> {
@@ -19,8 +19,6 @@ fn main() -> Result<()> {
     let runtime = Runtime::new()?;
 
     let block = async move {
-        let _pool = AnyPool::connect(&config.db).await?;
-
         let acme_server = ProxyAcmeServer::builder().le_staging().build().await?;
         acme_server.get_nonce().await?;
 
