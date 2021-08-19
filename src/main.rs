@@ -7,8 +7,8 @@ use server::{AcmeServer, AcmeServerBuilder, ProxyAcmeServer};
 mod config;
 mod http;
 mod limiter;
-mod server;
 mod repo;
+mod server;
 
 #[instrument]
 fn main() -> Result<()> {

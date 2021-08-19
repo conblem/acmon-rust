@@ -10,7 +10,7 @@ struct Config {
 #[cfg(test)]
 mod tests {
     use cached::{Cached, TimedSizedCache};
-    use futures_util::future::{Map, poll_fn};
+    use futures_util::future::{poll_fn, Map};
     use futures_util::ready;
     use futures_util::FutureExt;
     use parking_lot::Mutex;
@@ -20,7 +20,7 @@ mod tests {
     use std::task::{Context, Poll};
     use std::time::{SystemTime, UNIX_EPOCH};
     use thiserror::Error;
-    use tokio::sync::{Semaphore, OwnedSemaphorePermit};
+    use tokio::sync::{OwnedSemaphorePermit, Semaphore};
     use tokio_util::sync::PollSemaphore;
     use tower::Service;
 
@@ -47,7 +47,11 @@ mod tests {
             let _permit = ready!(self.semaphore.poll_acquire(cx)).expect("cannot be closed");
 
             // we take out the t to hint to the compiler that the option is never empty
-            let data = self.mutex.lock().take().expect("cannot be empty if we have permit");
+            let data = self
+                .mutex
+                .lock()
+                .take()
+                .expect("cannot be empty if we have permit");
 
             Poll::Ready(OwnedMutexGuard {
                 mutex: self.mutex.clone(),
@@ -87,21 +91,21 @@ mod tests {
     #[tokio::test]
     async fn try_lock() {
         let mut lock = OwnedMutex::new(0 as u8);
-        let mut guard = poll_fn(|cx| { lock.poll_lock(cx) }).await;
+        let mut guard = poll_fn(|cx| lock.poll_lock(cx)).await;
         *guard += 1;
         drop(guard);
 
-        let guard = poll_fn(|cx| { lock.poll_lock(cx) }).await;
+        let guard = poll_fn(|cx| lock.poll_lock(cx)).await;
         assert_eq!(1, *guard)
     }
 
     #[tokio::test]
     async fn should_deadlock() {
         let mut lock = OwnedMutex::new(0 as u8);
-        let mut guard = poll_fn(|cx| { lock.poll_lock(cx) }).await;
+        let mut guard = poll_fn(|cx| lock.poll_lock(cx)).await;
         *guard += 1;
 
-        let guard = poll_fn(|cx| { lock.poll_lock(cx) });
+        let guard = poll_fn(|cx| lock.poll_lock(cx));
         tokio::pin!(guard);
         let timeout = tokio::time::sleep(Duration::from_millis(100));
         tokio::pin!(timeout);
@@ -117,14 +121,14 @@ mod tests {
     #[tokio::test]
     async fn try_lock_multiple_threads() {
         let mut lock = OwnedMutex::new(0 as u8);
-        let mut guard = poll_fn(|cx| { lock.poll_lock(cx) }).await;
+        let mut guard = poll_fn(|cx| lock.poll_lock(cx)).await;
 
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(100)).await;
             *guard += 1;
         });
 
-        let guard = poll_fn(|cx| { lock.poll_lock(cx) });
+        let guard = poll_fn(|cx| lock.poll_lock(cx));
         tokio::pin!(guard);
         let sleep = tokio::time::sleep(Duration::from_millis(50));
         tokio::pin!(sleep);
@@ -137,10 +141,9 @@ mod tests {
             }
         }
 
-        let guard = poll_fn(|cx| { lock.poll_lock(cx) }).await;
+        let guard = poll_fn(|cx| lock.poll_lock(cx)).await;
         assert_eq!(1, *guard);
     }
-
 
     #[derive(Error, Debug)]
     pub enum LimiterError<E: Error> {
