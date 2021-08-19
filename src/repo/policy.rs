@@ -1,0 +1,93 @@
+use futures_util::ready;
+use pin_project_lite::pin_project;
+use std::future::Future;
+use std::marker::PhantomData;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use tokio::time::{Duration, Sleep};
+use tower::retry::Policy;
+
+#[derive(Clone)]
+struct RandomAttempts<Request, Response, E> {
+    attempts: usize,
+    phantom: PhantomData<(Request, Response, E)>,
+}
+
+pin_project! {
+    struct RandomAttemptsFuture<T> {
+        #[pin]
+        sleep: Sleep,
+        attempts: Option<T>,
+    }
+}
+
+impl<T> Future for RandomAttemptsFuture<T> {
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        ready!(this.sleep.poll(cx));
+
+        let attempts = this.attempts.take().expect("Future called again");
+        Poll::Ready(attempts)
+    }
+}
+
+impl<Request: Clone, Response, E> Policy<Request, Response, E>
+    for RandomAttempts<Request, Response, E>
+{
+    type Future = RandomAttemptsFuture<Self>;
+
+    fn retry(&self, _req: &Request, result: Result<&Response, &E>) -> Option<Self::Future> {
+        if result.is_ok() {
+            return None;
+        }
+
+        if self.attempts == 0 {
+            return None;
+        }
+
+        let sleep = tokio::time::sleep(Duration::from_millis(100));
+        let attempts = RandomAttempts {
+            attempts: self.attempts - 1,
+            phantom: PhantomData,
+        };
+        Some(RandomAttemptsFuture {
+            sleep,
+            attempts: Some(attempts),
+        })
+    }
+
+    fn clone_request(&self, req: &Request) -> Option<Request> {
+        Some(req.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tower::retry::Retry;
+    use tower::ServiceExt;
+    use tower_test::assert_request_eq;
+    use tower_test::mock;
+
+    use super::super::tests::BoxError;
+    use super::*;
+
+    #[tokio::test]
+    async fn test() {
+        let policy = RandomAttempts {
+            attempts: 1,
+            phantom: PhantomData,
+        };
+
+        let (service, mut handle) = mock::pair();
+        let service = service.map_result(|res| res.map_err(BoxError::from));
+        let service = Retry::new(policy, service);
+
+        let res = tokio::spawn(service.oneshot("hallo".to_string()));
+
+        assert_request_eq!(handle, "hallo".to_string()).send_response("welt");
+
+        assert_eq!(res.await.unwrap().unwrap(), "welt");
+    }
+}

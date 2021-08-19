@@ -211,46 +211,19 @@ where
 mod tests {
     use etcd_client::proto::PbRangeResponse;
     use etcd_client::GetResponse;
-    use std::fmt;
-    use std::fmt::{Debug, Display, Formatter};
     use std::time::{SystemTime as StdSystemTime, UNIX_EPOCH};
     use tower::ServiceExt;
     use tower_test::assert_request_eq;
     use tower_test::mock;
 
+    use super::super::tests::BoxError;
     use super::super::time::MockTime;
     use super::*;
-
-    struct BoxError(Box<dyn Error + Send + Sync + 'static>);
-
-    impl Display for BoxError {
-        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-            Display::fmt(&self.0, f)
-        }
-    }
-
-    impl Debug for BoxError {
-        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-            Debug::fmt(&self.0, f)
-        }
-    }
-
-    impl Error for BoxError {
-        fn source(&self) -> Option<&(dyn Error + 'static)> {
-            self.0.source()
-        }
-    }
-
-    impl From<Box<dyn Error + Send + Sync + 'static>> for BoxError {
-        fn from(input: Box<dyn Error + Send + Sync + 'static>) -> Self {
-            BoxError(input)
-        }
-    }
 
     #[tokio::test]
     async fn test() {
         let (service, mut handle) = mock::pair();
-        let service = service.map_result(|res| res.map_err(BoxError));
+        let service = service.map_result(|res| res.map_err(BoxError::from));
 
         let now = StdSystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let mut time = MockTime::new();
