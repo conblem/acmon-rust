@@ -3,11 +3,10 @@ use etcd_client::GetOptions;
 use std::convert::TryFrom;
 use std::error::Error;
 use std::future::Future;
-use std::marker::PhantomData;
 use std::num::TryFromIntError;
 use std::time::Duration;
 use thiserror::Error;
-use tower::Service;
+use tower::{Service, ServiceExt};
 use tracing::{error, instrument};
 
 use super::etcd::{EtcdRequest, EtcdResponse};
@@ -54,12 +53,15 @@ trait LimitRepoBuilder {
 enum EtcdLimitRepoBuilderError {
     #[error("Client not set")]
     ClientNotSet,
+
+    #[error("Time not set")]
+    TimeNotSet,
 }
 
 struct EtcdLimitRepoBuilder<S, T = SystemTime> {
     service: Option<S>,
     max_lease: Duration,
-    phantom: PhantomData<T>,
+    time: Option<T>,
 }
 
 impl<S, T> Default for EtcdLimitRepoBuilder<S, T> {
@@ -67,7 +69,7 @@ impl<S, T> Default for EtcdLimitRepoBuilder<S, T> {
         EtcdLimitRepoBuilder {
             service: None,
             max_lease: Duration::default(),
-            phantom: PhantomData,
+            time: None,
         }
     }
 }
@@ -75,6 +77,12 @@ impl<S, T> Default for EtcdLimitRepoBuilder<S, T> {
 impl<S, T> EtcdLimitRepoBuilder<S, T> {
     fn client(&mut self, service: S) -> &mut Self {
         self.service = Some(service);
+
+        self
+    }
+
+    fn time(&mut self, time: T) -> &mut Self {
+        self.time = Some(time);
 
         self
     }
@@ -96,10 +104,15 @@ impl<S, T> LimitRepoBuilder for EtcdLimitRepoBuilder<S, T> {
             .take()
             .ok_or(EtcdLimitRepoBuilderError::ClientNotSet)?;
 
+        let time = self
+            .time
+            .take()
+            .ok_or(EtcdLimitRepoBuilderError::TimeNotSet)?;
+
         Ok(EtcdLimitRepo {
             max_lease: self.max_lease,
             service,
-            phantom: PhantomData,
+            time,
         })
     }
 }
@@ -113,19 +126,19 @@ enum EtcdLimitRepoError<E: Error + Send + Sync + 'static> {
     RangeLongerThanMax(u128, u128),
 
     #[error(transparent)]
-    Etcd(E),
+    Etcd(#[from] E),
 }
 
 struct EtcdLimitRepo<S, T = SystemTime> {
     max_lease: Duration,
     service: S,
-    phantom: PhantomData<T>,
+    time: T,
 }
 
 #[async_trait]
 impl<S, F, E, T> LimitRepo for EtcdLimitRepo<S, T>
 where
-    S: Service<EtcdRequest, Future = F> + Send + Sync,
+    S: Service<EtcdRequest, Response = EtcdResponse, Error = E, Future = F> + Clone + Send + Sync,
     F: Future<Output = Result<EtcdResponse, E>> + Send + Sync,
     E: Error + Send + Sync + 'static,
     T: Time,
@@ -142,7 +155,7 @@ where
             ));
         }
 
-        let now = T::now();
+        let now = self.time.now();
 
         let future = now + Duration::from_secs(600);
         let future = future.as_millis();
@@ -156,10 +169,9 @@ where
 
         let key = format!("limit_{}_{}", key, start).into();
         let req = EtcdRequest::GetWithOptions(key, options);
-        let res = match self.service.call(req).await {
-            Ok(EtcdResponse::Get(res)) => res.count(),
-            Ok(_) => unreachable!(),
-            Err(err) => Err(EtcdLimitRepoError::Etcd(err))?
+        let res = match self.service.clone().oneshot(req).await? {
+            EtcdResponse::Get(res) => res.count(),
+            _ => unreachable!(),
         };
 
         match u32::try_from(res) {
@@ -173,16 +185,17 @@ where
         // currently no error
         let mut err = Ok(());
 
-        // we retry the request three times incase somebody tries to create a key with the same timestamp
+        // we retry the request three times in case somebody tries to create a key with the same timestamp
+        // todo: change retry to tower service
         for i in 0..2 {
-            let now = T::now();
+            let now = self.time.now();
             let key = format!("limit_{}_{}", key, now.as_millis());
             let req = EtcdRequest::Put(key.into(), vec![1]);
 
-            err = match self.service.call(req).await {
+            err = match self.service.clone().oneshot(req).await {
                 Err(err) => {
                     error!("Error {} in Iteration {}", err, i);
-                    Err(EtcdLimitRepoError::Etcd(err))
+                    Err(err.into())
                 }
                 Ok(_) => return Ok(()),
             };
@@ -196,13 +209,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use etcd_client::proto::PbPutResponse;
-    use etcd_client::PutResponse;
+    use etcd_client::proto::PbRangeResponse;
+    use etcd_client::GetResponse;
+    use std::fmt;
+    use std::fmt::{Debug, Display, Formatter};
+    use std::time::{SystemTime as StdSystemTime, UNIX_EPOCH};
+    use tower::ServiceExt;
     use tower_test::assert_request_eq;
     use tower_test::mock;
-    use std::fmt::{Display, Formatter, Debug};
-    use std::fmt;
-    use tower::ServiceExt;
 
     use super::super::time::MockTime;
     use super::*;
@@ -236,24 +250,35 @@ mod tests {
     #[tokio::test]
     async fn test() {
         let (service, mut handle) = mock::pair();
-        let mut service = service.map_result(|res| res.map_err(BoxError));
+        let service = service.map_result(|res| res.map_err(BoxError));
+
+        let now = StdSystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let mut time = MockTime::new();
+        time.expect_now().returning(move || now);
 
         let mut repo: EtcdLimitRepo<_, MockTime> = EtcdLimitRepo::builder()
             .client(service)
+            .time(time)
             .max_duration(Duration::from_millis(1000))
             .build()
             .expect("build failed");
 
-        let req = repo.get_limit("test", Duration::from_millis(500));
-        let req = tokio::spawn(req);
+        let req =
+            tokio::spawn(async move { repo.get_limit("test", Duration::from_millis(500)).await });
 
-        let expected = EtcdResponse::Put(PutResponse(PbPutResponse {
+        let res = EtcdResponse::Get(GetResponse(PbRangeResponse {
             header: None,
-            prev_kv: None,
+            kvs: vec![],
+            more: false,
+            count: 200,
         }));
 
-        assert_request_eq!(handle, EtcdRequest::Get(vec![])).send_response(expected);
+        let duration = now - Duration::from_millis(500);
+        let key = format!("limit_test_{}", duration.as_millis()).into();
+        let expected = EtcdRequest::GetWithOptions(key, GetOptions::new());
+        assert_request_eq!(handle, expected).send_response(res);
 
-        req.await;
+        let actual = req.await.unwrap().unwrap();
+        assert_eq!(actual, 200);
     }
 }

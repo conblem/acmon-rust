@@ -48,7 +48,7 @@ impl PartialEq for EtcdResponse {
         match (self, other) {
             (EtcdResponse::Put(res), EtcdResponse::Put(res2)) => res.0 == res2.0,
             (EtcdResponse::Get(res), EtcdResponse::Get(res2)) => res.0 == res2.0,
-            _ => false
+            _ => false,
         }
     }
 }
