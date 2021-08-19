@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use etcd_client::Error as EtcdError;
 use etcd_client::GetOptions;
 use std::convert::TryFrom;
 use std::error::Error;
@@ -106,7 +105,7 @@ impl<S, T> LimitRepoBuilder for EtcdLimitRepoBuilder<S, T> {
 }
 
 #[derive(Error, Debug)]
-enum EtcdLimitRepoError {
+enum EtcdLimitRepoError<E: Error + Send + Sync + 'static> {
     #[error("Could not convert Etcd's {0} to an u32: {1}")]
     CouldNotConvertEtcdCount(i64, TryFromIntError),
 
@@ -114,7 +113,7 @@ enum EtcdLimitRepoError {
     RangeLongerThanMax(u128, u128),
 
     #[error(transparent)]
-    Etcd(#[from] EtcdError),
+    Etcd(E),
 }
 
 struct EtcdLimitRepo<S, T = SystemTime> {
@@ -124,14 +123,15 @@ struct EtcdLimitRepo<S, T = SystemTime> {
 }
 
 #[async_trait]
-impl<S, F, T> LimitRepo for EtcdLimitRepo<S, T>
+impl<S, F, E, T> LimitRepo for EtcdLimitRepo<S, T>
 where
     S: Service<EtcdRequest, Future = F> + Send + Sync,
-    F: Future<Output = Result<EtcdResponse, EtcdError>> + Send + Sync,
+    F: Future<Output = Result<EtcdResponse, E>> + Send + Sync,
+    E: Error + Send + Sync + 'static,
     T: Time,
 {
     type Builder = EtcdLimitRepoBuilder<S, T>;
-    type Error = EtcdLimitRepoError;
+    type Error = EtcdLimitRepoError<E>;
 
     #[instrument(skip(self), fields(range = %range.as_millis()))]
     async fn get_limit(&mut self, key: &str, range: Duration) -> Result<u32, Self::Error> {
@@ -156,9 +156,10 @@ where
 
         let key = format!("limit_{}_{}", key, start).into();
         let req = EtcdRequest::GetWithOptions(key, options);
-        let res = match self.service.call(req).await? {
-            EtcdResponse::Get(res) => res.count(),
-            _ => unreachable!(),
+        let res = match self.service.call(req).await {
+            Ok(EtcdResponse::Get(res)) => res.count(),
+            Ok(_) => unreachable!(),
+            Err(err) => Err(EtcdLimitRepoError::Etcd(err))?
         };
 
         match u32::try_from(res) {
@@ -181,7 +182,7 @@ where
             err = match self.service.call(req).await {
                 Err(err) => {
                     error!("Error {} in Iteration {}", err, i);
-                    Err(err.into())
+                    Err(EtcdLimitRepoError::Etcd(err))
                 }
                 Ok(_) => return Ok(()),
             };
@@ -195,29 +196,64 @@ where
 
 #[cfg(test)]
 mod tests {
-    use tower_test::mock;
-    use tower_test::assert_request_eq;
-    use etcd_client::PutResponse;
     use etcd_client::proto::PbPutResponse;
+    use etcd_client::PutResponse;
+    use tower_test::assert_request_eq;
+    use tower_test::mock;
+    use std::fmt::{Display, Formatter, Debug};
+    use std::fmt;
+    use tower::ServiceExt;
 
     use super::super::time::MockTime;
     use super::*;
 
+    struct BoxError(Box<dyn Error + Send + Sync + 'static>);
+
+    impl Display for BoxError {
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+            Display::fmt(&self.0, f)
+        }
+    }
+
+    impl Debug for BoxError {
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+            Debug::fmt(&self.0, f)
+        }
+    }
+
+    impl Error for BoxError {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            self.0.source()
+        }
+    }
+
+    impl From<Box<dyn Error + Send + Sync + 'static>> for BoxError {
+        fn from(input: Box<dyn Error + Send + Sync + 'static>) -> Self {
+            BoxError(input)
+        }
+    }
+
     #[tokio::test]
     async fn test() {
-        let (mut service, mut handle) = mock::spawn();
+        let (service, mut handle) = mock::pair();
+        let mut service = service.map_result(|res| res.map_err(BoxError));
 
-        let _repo: EtcdLimitRepo<_, MockTime> = EtcdLimitRepo::builder()
+        let mut repo: EtcdLimitRepo<_, MockTime> = EtcdLimitRepo::builder()
             .client(service)
             .max_duration(Duration::from_millis(1000))
             .build()
             .expect("build failed");
 
-        let expected = PutResponse(PbPutResponse {
+        let req = repo.get_limit("test", Duration::from_millis(500));
+        let req = tokio::spawn(req);
+
+        let expected = EtcdResponse::Put(PutResponse(PbPutResponse {
             header: None,
             prev_kv: None,
-        });
+        }));
 
         assert_request_eq!(handle, EtcdRequest::Get(vec![])).send_response(expected);
+
+        req.await;
     }
 }

@@ -15,10 +15,42 @@ pub(super) enum EtcdRequest {
     GetWithOptions(Vec<u8>, GetOptions),
 }
 
+// we cant compare options so we only implement this in tests
+#[cfg(test)]
+impl PartialEq for EtcdRequest {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (EtcdRequest::Put(key, val), EtcdRequest::Put(key2, val2)) => {
+                key == key2 && val == val2
+            }
+            (
+                EtcdRequest::PutWithOptions(val, key, _),
+                EtcdRequest::PutWithOptions(val2, key2, _),
+            ) => val == val2 && key == key2,
+            (EtcdRequest::Get(key), EtcdRequest::Get(key2)) => key == key2,
+            (EtcdRequest::GetWithOptions(key, _), EtcdRequest::GetWithOptions(key2, _)) => {
+                key == key2
+            }
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) enum EtcdResponse {
     Put(PutResponse),
     Get(GetResponse),
+}
+
+#[cfg(test)]
+impl PartialEq for EtcdResponse {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (EtcdResponse::Put(res), EtcdResponse::Put(res2)) => res.0 == res2.0,
+            (EtcdResponse::Get(res), EtcdResponse::Get(res2)) => res.0 == res2.0,
+            _ => false
+        }
+    }
 }
 
 impl From<PutResponse> for EtcdResponse {
