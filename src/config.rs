@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::Deserialize;
 use std::env;
 use std::fs::read;
-use tracing::{debug, info, Span, instrument};
+use tracing::{debug, info, instrument, Span};
 
 #[derive(Deserialize, Debug)]
 pub struct Config {

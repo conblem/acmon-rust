@@ -1,6 +1,6 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use tokio::runtime::Runtime;
-use tracing::{Instrument, instrument};
+use tracing::{instrument, Instrument};
 
 use server::{AcmeServer, AcmeServerBuilder, ProxyAcmeServer};
 
