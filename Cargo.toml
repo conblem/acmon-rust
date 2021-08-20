@@ -32,3 +32,7 @@ serde_test = "1"
 etcd-client = { version = "0.7", features = ["pub-response-field"] }
 tower-test = "0.4.0"
 mockall = "0.10.2"
+testcontainers = "0.12"
+
+[features]
+container = []

@@ -121,3 +121,91 @@ where
         self.0.call(req)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use etcd_client::proto::{PbPutResponse, PbRangeResponse};
+    use etcd_client::Client;
+    use testcontainers::images::generic::GenericImage;
+    use testcontainers::{clients, Docker, Image};
+
+    use super::*;
+    use tower::ServiceExt;
+
+    fn ok<T, E>(input: Result<T, E>) -> T {
+        match input {
+            Ok(val) => val,
+            Err(_) => unreachable!()
+        }
+    }
+
+    #[should_panic]
+    #[test]
+    fn test_ok() {
+        let res = Err("test") as Result<&'static str, &'static str>;
+        ok(res);
+    }
+
+    fn get_response(res: EtcdResponse) -> GetResponse {
+        match res {
+            EtcdResponse::Get(res) => res,
+            EtcdResponse::Put(_) => unreachable!(),
+        }
+    }
+
+    #[should_panic]
+    #[test]
+    fn test_get_response() {
+        let res = EtcdResponse::Put(PutResponse(PbPutResponse {
+            header: None,
+            prev_kv: None,
+        }));
+        get_response(res);
+    }
+
+    fn put_response(res: EtcdResponse) -> PutResponse {
+        match res {
+            EtcdResponse::Put(res) => res,
+            EtcdResponse::Get(_) => unreachable!(),
+        }
+    }
+
+    #[should_panic]
+    #[test]
+    fn test_put_response() {
+        let res = EtcdResponse::Get(GetResponse(PbRangeResponse {
+            header: None,
+            kvs: vec![],
+            more: false,
+            count: 0,
+        }));
+        put_response(res);
+    }
+
+    #[cfg(feature = "container")]
+    #[tokio::test]
+    async fn test() {
+        let image = GenericImage::new("quay.io/coreos/etcd:v3.5.0")
+            .with_args(vec![
+                "--listen-client-urls=http://0.0.0.0:2379".into(),
+                "--advertise-client-urls=http://0.0.0.0:2379".into(),
+            ])
+            .with_entrypoint("/usr/local/bin/etcd");
+
+        let docker = clients::Cli::default();
+        let etcd = docker.run(image);
+
+        let port = etcd.get_host_port(2379).unwrap();
+        let client = Client::connect([format!("http://localhost:{}", port)], None)
+            .await
+            .unwrap();
+
+        let mut service = EtcdService::new(client.clone());
+        let service = ok(service.ready().await);
+
+        let res = service.call(EtcdRequest::Get("test".into())).await.unwrap();
+        let res = get_response(res);
+
+        assert_eq!(res.count(), 0);
+    }
+}
