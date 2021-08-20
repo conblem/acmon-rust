@@ -208,19 +208,19 @@ where
 mod tests {
     use etcd_client::proto::PbRangeResponse;
     use etcd_client::GetResponse;
+    use std::sync::Arc;
     use std::time::{SystemTime as StdSystemTime, UNIX_EPOCH};
     use tower::ServiceExt;
     use tower_test::assert_request_eq;
     use tower_test::mock;
 
-    use super::super::tests::BoxError;
     use super::super::time::MockTime;
     use super::*;
 
     #[tokio::test]
     async fn test() {
         let (service, mut handle) = mock::pair();
-        let service = service.map_result(|res| res.map_err(BoxError::from));
+        let service = service.map_result(|res| res.map_err(Arc::<dyn Error + Send + Sync>::from));
 
         let now = StdSystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let mut time = MockTime::new();

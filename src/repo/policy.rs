@@ -66,12 +66,13 @@ impl<Request: Clone, Response, E> Policy<Request, Response, E> for RandomAttempt
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+    use std::sync::Arc;
     use tower::retry::Retry;
     use tower::ServiceExt;
     use tower_test::assert_request_eq;
     use tower_test::mock;
 
-    use super::super::tests::BoxError;
     use super::*;
 
     #[tokio::test]
@@ -79,7 +80,7 @@ mod tests {
         let policy = RandomAttempts::new(1);
 
         let (service, mut handle) = mock::pair();
-        let service = service.map_result(|res| res.map_err(BoxError::from));
+        let service = service.map_result(|res| res.map_err(Arc::<dyn Error + Send + Sync>::from));
         let service = Retry::new(policy, service);
 
         let fut = service.oneshot("hallo".to_string());
