@@ -91,12 +91,8 @@ impl<R: Clone, F> Clone for EtcdService<R, F> {
 impl EtcdService<(), ()> {
     fn new(
         client: Client,
-    ) -> impl Service<
-        EtcdRequest,
-        Response = EtcdResponse,
-        Error = EtcdError,
-        Future = impl Future<Output = Result<EtcdResponse, EtcdError>>,
-    > + Clone {
+    ) -> impl Service<EtcdRequest, Future = impl Future<Output = Result<EtcdResponse, EtcdError>>> + Clone
+    {
         let client = client.kv_client();
 
         let service = service_fn(move |req| {
