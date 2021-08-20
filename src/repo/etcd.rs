@@ -128,14 +128,14 @@ mod tests {
     use etcd_client::Client;
     use testcontainers::images::generic::GenericImage;
     use testcontainers::{clients, Docker, Image};
+    use tower::ServiceExt;
 
     use super::*;
-    use tower::ServiceExt;
 
     fn ok<T, E>(input: Result<T, E>) -> T {
         match input {
             Ok(val) => val,
-            Err(_) => unreachable!()
+            Err(_) => unreachable!(),
         }
     }
 
