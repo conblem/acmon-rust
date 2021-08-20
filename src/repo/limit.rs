@@ -6,11 +6,13 @@ use std::future::Future;
 use std::num::TryFromIntError;
 use std::time::Duration;
 use thiserror::Error;
+use tower::retry::Retry;
 use tower::{Service, ServiceExt};
 use tracing::{error, instrument};
 
 use super::etcd::{EtcdRequest, EtcdResponse};
 use super::time::{SystemTime, Time};
+use crate::repo::policy::RandomAttempts;
 
 #[async_trait]
 trait LimitRepo {
@@ -113,6 +115,7 @@ impl<S, T> LimitRepoBuilder for EtcdLimitRepoBuilder<S, T> {
             max_lease: self.max_lease,
             service,
             time,
+            attempts: RandomAttempts::new(3),
         })
     }
 }
@@ -133,12 +136,17 @@ struct EtcdLimitRepo<S, T = SystemTime> {
     max_lease: Duration,
     service: S,
     time: T,
+    attempts: RandomAttempts,
 }
 
 #[async_trait]
 impl<S, F, E, T> LimitRepo for EtcdLimitRepo<S, T>
 where
-    S: Service<EtcdRequest, Response = EtcdResponse, Error = E, Future = F> + Clone + Send + Sync,
+    S: Service<EtcdRequest, Response = EtcdResponse, Error = E, Future = F>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     F: Future<Output = Result<EtcdResponse, E>> + Send + Sync,
     E: Error + Send + Sync + 'static,
     T: Time,
@@ -169,7 +177,7 @@ where
 
         let key = format!("limit_{}_{}", key, start).into();
         let req = EtcdRequest::GetWithOptions(key, options);
-        let res = match self.service.clone().oneshot(req).await? {
+        let res = match (&mut self.service).oneshot(req).await? {
             EtcdResponse::Get(res) => res.count(),
             _ => unreachable!(),
         };
@@ -182,28 +190,17 @@ where
 
     #[instrument(skip(self))]
     async fn add_req(&mut self, key: &str) -> Result<(), Self::Error> {
-        // currently no error
-        let mut err = Ok(());
-
-        // we retry the request three times in case somebody tries to create a key with the same timestamp
-        // todo: change retry to tower service
-        for i in 0..2 {
+        // we use map_request so we can recalculate the request everytime to get the current time
+        let service = self.service.clone().map_request(|()| {
             let now = self.time.now();
             let key = format!("limit_{}_{}", key, now.as_millis());
-            let req = EtcdRequest::Put(key.into(), vec![1]);
+            EtcdRequest::Put(key.into(), vec![1])
+        });
+        Retry::new(self.attempts.clone(), service)
+            .oneshot(())
+            .await?;
 
-            err = match self.service.clone().oneshot(req).await {
-                Err(err) => {
-                    error!("Error {} in Iteration {}", err, i);
-                    Err(err.into())
-                }
-                Ok(_) => return Ok(()),
-            };
-
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-
-        err
+        Ok(())
     }
 }
 

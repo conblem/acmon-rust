@@ -7,7 +7,7 @@ use tower::service_fn;
 use tower::util::ServiceFn;
 use tower::Service;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum EtcdRequest {
     Put(Vec<u8>, Vec<u8>),
     PutWithOptions(Vec<u8>, Vec<u8>, PutOptions),
@@ -36,7 +36,7 @@ impl PartialEq for EtcdRequest {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum EtcdResponse {
     Put(PutResponse),
     Get(GetResponse),
@@ -82,6 +82,12 @@ async fn request(mut client: KvClient, req: EtcdRequest) -> Result<EtcdResponse,
 
 struct EtcdService<R, F>(ServiceFn<R>, PhantomData<F>);
 
+impl<R: Clone, F> Clone for EtcdService<R, F> {
+    fn clone(&self) -> Self {
+        EtcdService(self.0.clone(), PhantomData)
+    }
+}
+
 impl EtcdService<(), ()> {
     fn new(
         client: Client,
@@ -90,7 +96,7 @@ impl EtcdService<(), ()> {
         Response = EtcdResponse,
         Error = EtcdError,
         Future = impl Future<Output = Result<EtcdResponse, EtcdError>>,
-    > {
+    > + Clone {
         let client = client.kv_client();
 
         let service = service_fn(move |req| {
