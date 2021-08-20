@@ -3,9 +3,8 @@ use etcd_client::{Client, GetOptions, GetResponse, KvClient, PutOptions, PutResp
 use std::future::Future;
 use std::marker::PhantomData;
 use std::task::{Context, Poll};
-use tower::service_fn;
 use tower::util::ServiceFn;
-use tower::Service;
+use tower::{service_fn, Service};
 
 #[derive(Clone, Debug)]
 pub(super) enum EtcdRequest {
