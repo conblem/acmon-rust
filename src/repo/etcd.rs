@@ -126,7 +126,7 @@ mod tests {
     use etcd_client::proto::{PbPutResponse, PbRangeResponse};
     use etcd_client::Client;
     use testcontainers::images::generic::GenericImage;
-    use testcontainers::{clients, Docker, Image};
+    use testcontainers::{clients, Container, Docker, Image};
     use tower::ServiceExt;
 
     use super::*;
@@ -181,9 +181,7 @@ mod tests {
         put_response(res);
     }
 
-    #[cfg(feature = "container")]
-    #[tokio::test]
-    async fn test() {
+    fn create_etcd(cli: &clients::Cli) -> Container<clients::Cli, GenericImage> {
         let image = GenericImage::new("quay.io/coreos/etcd:v3.5.0")
             .with_args(vec![
                 "--listen-client-urls=http://0.0.0.0:2379".into(),
@@ -191,13 +189,22 @@ mod tests {
             ])
             .with_entrypoint("/usr/local/bin/etcd");
 
-        let docker = clients::Cli::default();
-        let etcd = docker.run(image);
+        cli.run(image)
+    }
 
+    async fn create_client(etcd: &Container<'_, clients::Cli, GenericImage>) -> Client {
         let port = etcd.get_host_port(2379).unwrap();
-        let client = Client::connect([format!("http://localhost:{}", port)], None)
+        Client::connect([format!("http://localhost:{}", port)], None)
             .await
-            .unwrap();
+            .unwrap()
+    }
+
+    #[cfg(feature = "container")]
+    #[tokio::test]
+    async fn test() {
+        let cli = clients::Cli::default();
+        let etcd = create_etcd(&cli);
+        let client = create_client(&etcd).await;
 
         let mut service = EtcdService::new(client.clone());
         let service = ok(service.ready().await);
