@@ -14,6 +14,25 @@ pub(super) enum EtcdRequest {
     GetWithOptions(Vec<u8>, GetOptions),
 }
 
+impl EtcdRequest {
+    fn put<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(key: K, value: V) -> Self {
+        EtcdRequest::Put(key.into(), value.into())
+    }
+    fn put_with_options<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(
+        key: K,
+        value: V,
+        options: PutOptions,
+    ) -> Self {
+        EtcdRequest::PutWithOptions(key.into(), value.into(), options)
+    }
+    fn get<K: Into<Vec<u8>>>(key: K) -> Self {
+        EtcdRequest::Get(key.into())
+    }
+    fn get_with_options<K: Into<Vec<u8>>>(key: K, options: GetOptions) -> Self {
+        EtcdRequest::GetWithOptions(key.into(), options)
+    }
+}
+
 // we cant compare options so we only implement this in tests
 #[cfg(test)]
 impl PartialEq for EtcdRequest {
@@ -134,7 +153,7 @@ mod tests {
     fn ok<T, E>(input: Result<T, E>) -> T {
         match input {
             Ok(val) => val,
-            Err(_) => unreachable!(),
+            Err(_) => unreachable!("input is not ok"),
         }
     }
 
@@ -148,7 +167,7 @@ mod tests {
     fn get_response(res: EtcdResponse) -> GetResponse {
         match res {
             EtcdResponse::Get(res) => res,
-            EtcdResponse::Put(_) => unreachable!(),
+            EtcdResponse::Put(_) => unreachable!("res is not a get: {:?}", res),
         }
     }
 
@@ -165,7 +184,7 @@ mod tests {
     fn put_response(res: EtcdResponse) -> PutResponse {
         match res {
             EtcdResponse::Put(res) => res,
-            EtcdResponse::Get(_) => unreachable!(),
+            EtcdResponse::Get(_) => unreachable!("res is not a put: {:?}", res),
         }
     }
 
@@ -209,9 +228,23 @@ mod tests {
         let mut service = EtcdService::new(client.clone());
         let service = ok(service.ready().await);
 
-        let res = service.call(EtcdRequest::Get("test".into())).await.unwrap();
-        let res = get_response(res);
+        // etcd is empty so count is 0
+        let res = service.call(EtcdRequest::get("test")).await.unwrap();
+        assert_eq!(get_response(res).count(), 0);
 
-        assert_eq!(res.count(), 0);
+        // put a new kv into the store so there is no prev key
+        let res = service
+            .call(EtcdRequest::put("test", "is a value"))
+            .await
+            .unwrap();
+        assert!(put_response(res).prev_key().is_none());
+
+        // now we get the kv so count should be one
+        let res = service.call(EtcdRequest::get("test")).await.unwrap();
+        let res = get_response(res);
+        assert_eq!(res.count(), 1);
+        let value = &res.kvs()[0];
+        assert_eq!(b"test", value.key());
+        assert_eq!(b"is a value", value.value());
     }
 }
