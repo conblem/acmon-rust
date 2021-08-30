@@ -96,16 +96,7 @@ where
     S: Service<Request>,
     S::Error: Error,
     C: Fn(R, S) -> F,
-    F: Future<
-            Output = (
-                Result<
-                    (),
-                    LimitServiceError<<R as LimitRepo>::Error, <S as Service<Request>>::Error>,
-                >,
-                R,
-                S,
-            ),
-        > + Unpin,
+    F: Future<Output = (Result<(), LimitServiceError<R::Error, S::Error>>, R, S)> + Unpin,
 {
     type Response = S::Response;
     type Error = LimitServiceError<<R as LimitRepo>::Error, <S as Service<Request>>::Error>;
