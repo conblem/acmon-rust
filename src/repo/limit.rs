@@ -1,13 +1,15 @@
 use async_trait::async_trait;
+use futures_util::ready;
+use futures_util::FutureExt;
+use pin_project_lite::pin_project;
 use std::error::Error;
 use std::future::Future;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use thiserror::Error;
 use tower::Service;
-use futures_util::ready;
-use futures_util::FutureExt;
 
 #[async_trait]
 pub(super) trait LimitRepo {
@@ -47,84 +49,137 @@ pub(super) trait LimitRepoBuilder {
 }
 
 #[derive(Debug, Error)]
-enum LimitServiceError<E: Error> {
+enum LimitServiceError<R: Error, S: Error> {
     #[error(transparent)]
-    Repo(#[from] E),
+    Repo(R),
+
+    #[error(transparent)]
+    Service(S),
+
     #[error("Reached rate limit")]
     Limited,
 }
 
-enum LimitServiceState<R: LimitRepo> {
-    Empty,
-    Initial(R),
-    Working(Pin<Box<dyn Future<Output = Result<((), R), (<R as LimitRepo>::Error, R)>>>>),
-    Ready(R),
+enum LimitService<Request, R, S, C, F> {
+    Empty(PhantomData<Request>),
+    Data { repo: R, service: S, creator: C },
+    Working { creator: C, future: F },
 }
 
-struct LimitService<S, R: LimitRepo> {
-    service: S,
-    state: LimitServiceState<R>
-}
-
-impl<Request, S, R> Service<Request>
-    for LimitService<S, R>
+impl<Request, R, S> LimitService<Request, R, S, (), ()>
 where
     R: LimitRepo + 'static,
-    S: Service<Request, Error = <R as LimitRepo>::Error>,
+    S: Service<Request>,
+    S::Error: Error,
+{
+    fn new(repo: R, service: S) -> impl Service<Request> {
+        let creator = |mut repo: R, service: S| {
+            Box::pin(async move {
+                let duration = Duration::from_secs(10);
+                let _limit = match repo.get_limit("test", duration).await {
+                    Ok(limit) => limit,
+                    Err(err) => return (Err(LimitServiceError::Repo(err)), repo, service),
+                };
+
+                (Ok(()), repo, service)
+            })
+        };
+        let future = creator(repo, service);
+
+        LimitService::Working { creator, future }
+    }
+}
+
+impl<Request, R, S, C, F> Service<Request> for LimitService<Request, R, S, C, F>
+where
+    R: LimitRepo + 'static,
+    S: Service<Request>,
+    S::Error: Error,
+    C: Fn(R, S) -> F,
+    F: Future<
+            Output = (
+                Result<
+                    (),
+                    LimitServiceError<<R as LimitRepo>::Error, <S as Service<Request>>::Error>,
+                >,
+                R,
+                S,
+            ),
+        > + Unpin,
 {
     type Response = S::Response;
-    type Error = LimitServiceError<<R as LimitRepo>::Error>;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + Sync>>;
+    type Error = LimitServiceError<<R as LimitRepo>::Error, <S as Service<Request>>::Error>;
+    type Future = LimitServiceFuture<R::Error, S::Future>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let state = std::mem::replace(&mut self.state, LimitServiceState::Empty);
-        let mut repo = match state {
-            LimitServiceState::Empty => unreachable!(),
-            LimitServiceState::Working(mut fut) => {
-                let res = match fut.poll_unpin(cx) {
-                    Poll::Pending => {
-                        self.state = LimitServiceState::Working(fut);
-                        return Poll::Pending;
-                    }
-                    Poll::Ready(res) => res,
-                };
-                return match res {
-                    Ok(((), repo)) => {
-                        self.state = LimitServiceState::Ready(repo);
-                        self.poll_ready(cx)
-                    },
-                    Err((err, repo)) => {
-                        self.state = LimitServiceState::Initial(repo);
-                        Poll::Ready(Err(err.into()))
-                    }
-                };
+        let this = std::mem::replace(self, Self::Empty(PhantomData));
+
+        let (creator, mut future) = match this {
+            Self::Empty(_) => unreachable!(),
+            Self::Data {
+                repo,
+                service,
+                creator,
+            } => {
+                let future = creator(repo, service);
+                *self = Self::Working { creator, future };
+                return self.poll_ready(cx);
             }
-            LimitServiceState::Ready(repo) => {
-                match self.service.poll_ready(cx) {
-                    Poll::Pending => {
-                        self.state = LimitServiceState::Ready(repo);
-                        return Poll::Pending;
-                    }
-                    Poll::Ready(res) => {
-                        self.state = LimitServiceState::Initial(repo);
-                        return Poll::Ready(Ok(res?));
-                    }
-                }
-            }
-            LimitServiceState::Initial(repo) => repo,
+            Self::Working { creator, future } => (creator, future),
         };
 
-        self.state = LimitServiceState::Working(Box::pin(async move {
-            let duration = Duration::from_secs(10);
-            let limit = repo.get_limit("hallo", duration).await;
-            Ok(((), repo))
-        }));
+        let (res, repo, service) = match future.poll_unpin(cx) {
+            Poll::Pending => {
+                *self = Self::Working { creator, future };
+                return Poll::Pending;
+            }
+            Poll::Ready(res) => res,
+        };
 
-        self.poll_ready(cx)
+        *self = Self::Data {
+            repo,
+            service,
+            creator,
+        };
+        return Poll::Ready(res);
     }
 
     fn call(&mut self, req: Request) -> Self::Future {
-        todo!()
+        let service = match self {
+            Self::Data { service, .. } => service,
+            _ => panic!("Call poll_ready first"),
+        };
+
+        let future = service.call(req);
+        LimitServiceFuture {
+            phantom: PhantomData,
+            future,
+        }
+    }
+}
+
+pin_project! {
+    struct LimitServiceFuture<R, F> {
+        phantom: PhantomData<R>,
+        #[pin]
+        future: F,
+    }
+}
+
+impl<R, T, E, F> Future for LimitServiceFuture<R, F>
+where
+    F: Future<Output = Result<T, E>>,
+    R: Error,
+    E: Error,
+{
+    type Output = Result<T, LimitServiceError<R, E>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        let res = ready!(this.future.poll(cx));
+        let res = res.map_err(|err| LimitServiceError::Service(err));
+
+        Poll::Ready(res)
     }
 }
 
@@ -132,8 +187,15 @@ where
 mod tests {
     use super::*;
 
-    #[test]
-    fn test() {
+    trait PinServiceTrait<Request> {
+        type Response;
+        type Error;
+        type Future: Future<Output = Result<Self::Response, Self::Error>>;
 
+        fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>>;
+        fn call(self: Pin<&mut Self>, req: Request) -> Self::Future;
     }
+
+    #[test]
+    fn test() {}
 }
