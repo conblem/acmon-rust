@@ -6,6 +6,8 @@ use std::task::{Context, Poll};
 use tower::util::ServiceFn;
 use tower::{service_fn, Service};
 
+mod limit;
+
 #[derive(Clone, Debug)]
 pub(super) enum EtcdRequest {
     Put(Vec<u8>, Vec<u8>),
@@ -16,20 +18,20 @@ pub(super) enum EtcdRequest {
 
 impl EtcdRequest {
     fn put<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(key: K, value: V) -> Self {
-        EtcdRequest::Put(key.into(), value.into())
+        Self::Put(key.into(), value.into())
     }
     fn put_with_options<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(
         key: K,
         value: V,
         options: PutOptions,
     ) -> Self {
-        EtcdRequest::PutWithOptions(key.into(), value.into(), options)
+        Self::PutWithOptions(key.into(), value.into(), options)
     }
     fn get<K: Into<Vec<u8>>>(key: K) -> Self {
-        EtcdRequest::Get(key.into())
+        Self::Get(key.into())
     }
     fn get_with_options<K: Into<Vec<u8>>>(key: K, options: GetOptions) -> Self {
-        EtcdRequest::GetWithOptions(key.into(), options)
+        Self::GetWithOptions(key.into(), options)
     }
 }
 
@@ -38,17 +40,12 @@ impl EtcdRequest {
 impl PartialEq for EtcdRequest {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (EtcdRequest::Put(key, val), EtcdRequest::Put(key2, val2)) => {
-                key == key2 && val == val2
+            (Self::Put(key, val), Self::Put(key2, val2)) => key == key2 && val == val2,
+            (Self::PutWithOptions(val, key, _), Self::PutWithOptions(val2, key2, _)) => {
+                val == val2 && key == key2
             }
-            (
-                EtcdRequest::PutWithOptions(val, key, _),
-                EtcdRequest::PutWithOptions(val2, key2, _),
-            ) => val == val2 && key == key2,
-            (EtcdRequest::Get(key), EtcdRequest::Get(key2)) => key == key2,
-            (EtcdRequest::GetWithOptions(key, _), EtcdRequest::GetWithOptions(key2, _)) => {
-                key == key2
-            }
+            (Self::Get(key), Self::Get(key2)) => key == key2,
+            (Self::GetWithOptions(key, _), Self::GetWithOptions(key2, _)) => key == key2,
             _ => false,
         }
     }
@@ -64,8 +61,8 @@ pub(super) enum EtcdResponse {
 impl PartialEq for EtcdResponse {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (EtcdResponse::Put(res), EtcdResponse::Put(res2)) => res.0 == res2.0,
-            (EtcdResponse::Get(res), EtcdResponse::Get(res2)) => res.0 == res2.0,
+            (Self::Put(res), Self::Put(res2)) => res.0 == res2.0,
+            (Self::Get(res), Self::Get(res2)) => res.0 == res2.0,
             _ => false,
         }
     }
@@ -73,13 +70,13 @@ impl PartialEq for EtcdResponse {
 
 impl From<PutResponse> for EtcdResponse {
     fn from(input: PutResponse) -> Self {
-        EtcdResponse::Put(input)
+        Self::Put(input)
     }
 }
 
 impl From<GetResponse> for EtcdResponse {
     fn from(input: GetResponse) -> Self {
-        EtcdResponse::Get(input)
+        Self::Get(input)
     }
 }
 

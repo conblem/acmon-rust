@@ -1,21 +1,18 @@
 use async_trait::async_trait;
-use etcd_client::GetOptions;
-use std::convert::TryFrom;
+use futures_util::ready;
+use futures_util::FutureExt;
+use pin_project_lite::pin_project;
 use std::error::Error;
 use std::future::Future;
-use std::num::TryFromIntError;
+use std::marker::PhantomData;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 use thiserror::Error;
-use tower::retry::Retry;
-use tower::{Service, ServiceExt};
-use tracing::{error, instrument};
-
-use super::etcd::{EtcdRequest, EtcdResponse};
-use super::time::{SystemTime, Time};
-use crate::repo::policy::RandomAttempts;
+use tower::Service;
 
 #[async_trait]
-trait LimitRepo {
+pub(super) trait LimitRepo {
     type Builder: LimitRepoBuilder<Repo = Self>;
     type Error: Error + Send + Sync + 'static;
 
@@ -23,7 +20,7 @@ trait LimitRepo {
     async fn add_req(&mut self, key: &str) -> Result<(), Self::Error>;
 }
 
-trait ToLimitRepoBuilder {
+pub(super) trait ToLimitRepoBuilder {
     type Repo: LimitRepo<Builder = Self::Builder>;
     type Builder: LimitRepoBuilder<Repo = Self::Repo>;
 
@@ -43,7 +40,7 @@ where
     }
 }
 
-trait LimitRepoBuilder {
+pub(super) trait LimitRepoBuilder {
     type Repo;
     type Error: Error + Send + Sync + 'static;
 
@@ -51,204 +48,145 @@ trait LimitRepoBuilder {
     fn build(&mut self) -> Result<Self::Repo, Self::Error>;
 }
 
-#[derive(Error, Debug)]
-enum EtcdLimitRepoBuilderError {
-    #[error("Client not set")]
-    ClientNotSet,
-
-    #[error("Time not set")]
-    TimeNotSet,
-}
-
-struct EtcdLimitRepoBuilder<S, T = SystemTime> {
-    service: Option<S>,
-    max_lease: Duration,
-    time: Option<T>,
-}
-
-impl<S, T> Default for EtcdLimitRepoBuilder<S, T> {
-    fn default() -> Self {
-        EtcdLimitRepoBuilder {
-            service: None,
-            max_lease: Duration::default(),
-            time: None,
-        }
-    }
-}
-
-impl<S, T> EtcdLimitRepoBuilder<S, T> {
-    fn client(&mut self, service: S) -> &mut Self {
-        self.service = Some(service);
-
-        self
-    }
-
-    fn time(&mut self, time: T) -> &mut Self {
-        self.time = Some(time);
-
-        self
-    }
-}
-
-impl<S, T> LimitRepoBuilder for EtcdLimitRepoBuilder<S, T> {
-    type Repo = EtcdLimitRepo<S, T>;
-    type Error = EtcdLimitRepoBuilderError;
-
-    fn max_duration(&mut self, range: Duration) -> &mut Self {
-        self.max_lease = range;
-
-        self
-    }
-
-    fn build(&mut self) -> Result<Self::Repo, Self::Error> {
-        let service = self
-            .service
-            .take()
-            .ok_or(EtcdLimitRepoBuilderError::ClientNotSet)?;
-
-        let time = self
-            .time
-            .take()
-            .ok_or(EtcdLimitRepoBuilderError::TimeNotSet)?;
-
-        Ok(EtcdLimitRepo {
-            max_lease: self.max_lease,
-            service,
-            time,
-            attempts: RandomAttempts::new(3),
-        })
-    }
-}
-
-#[derive(Error, Debug)]
-enum EtcdLimitRepoError<E: Error + Send + Sync + 'static> {
-    #[error("Could not convert Etcd's {0} to an u32: {1}")]
-    CouldNotConvertEtcdCount(i64, TryFromIntError),
-
-    #[error("Duration {0} is longer than max {0}")]
-    RangeLongerThanMax(u128, u128),
+#[derive(Debug, Error)]
+enum LimitServiceError<R: Error, S: Error> {
+    #[error(transparent)]
+    Repo(R),
 
     #[error(transparent)]
-    Etcd(#[from] E),
+    Service(S),
+
+    #[error("Reached rate limit")]
+    Limited,
 }
 
-struct EtcdLimitRepo<S, T = SystemTime> {
-    max_lease: Duration,
-    service: S,
-    time: T,
-    attempts: RandomAttempts,
+enum LimitService<Request, R, S, C, F> {
+    Empty(PhantomData<Request>),
+    Data { repo: R, service: S, creator: C },
+    Working { creator: C, future: F },
 }
 
-#[async_trait]
-impl<S, F, E, T> LimitRepo for EtcdLimitRepo<S, T>
+impl<Request, R, S> LimitService<Request, R, S, (), ()>
 where
-    S: Service<EtcdRequest, Response = EtcdResponse, Error = E, Future = F>
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    F: Future<Output = Result<EtcdResponse, E>> + Send + Sync,
-    E: Error + Send + Sync + 'static,
-    T: Time,
+    R: LimitRepo + 'static,
+    S: Service<Request>,
+    S::Error: Error,
 {
-    type Builder = EtcdLimitRepoBuilder<S, T>;
-    type Error = EtcdLimitRepoError<E>;
+    fn new(repo: R, service: S) -> impl Service<Request> {
+        let creator = |mut repo: R, service: S| {
+            Box::pin(async move {
+                let duration = Duration::from_secs(10);
+                let _limit = match repo.get_limit("test", duration).await {
+                    Ok(limit) => limit,
+                    Err(err) => return (Err(LimitServiceError::Repo(err)), repo, service),
+                };
 
-    #[instrument(skip(self), fields(range = %range.as_millis()))]
-    async fn get_limit(&mut self, key: &str, range: Duration) -> Result<u32, Self::Error> {
-        if range > self.max_lease {
-            return Err(EtcdLimitRepoError::RangeLongerThanMax(
-                range.as_millis(),
-                self.max_lease.as_millis(),
-            ));
-        }
+                (Ok(()), repo, service)
+            })
+        };
+        let future = creator(repo, service);
 
-        let now = self.time.now();
+        LimitService::Working { creator, future }
+    }
+}
 
-        let future = now + Duration::from_secs(600);
-        let future = future.as_millis();
+impl<Request, R, S, C, F> Service<Request> for LimitService<Request, R, S, C, F>
+where
+    R: LimitRepo + 'static,
+    S: Service<Request>,
+    S::Error: Error,
+    C: Fn(R, S) -> F,
+    F: Future<Output = (Result<(), LimitServiceError<R::Error, S::Error>>, R, S)> + Unpin,
+{
+    type Response = S::Response;
+    type Error = LimitServiceError<<R as LimitRepo>::Error, <S as Service<Request>>::Error>;
+    type Future = LimitServiceFuture<R::Error, S::Future>;
 
-        let start = now - range;
-        let start = start.as_millis();
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = std::mem::replace(self, Self::Empty(PhantomData));
 
-        let options = GetOptions::new()
-            .with_range(format!("limit_{}_{}", key, future))
-            .with_count_only();
-
-        let key = format!("limit_{}_{}", key, start).into();
-        let req = EtcdRequest::GetWithOptions(key, options);
-        let res = match (&mut self.service).oneshot(req).await? {
-            EtcdResponse::Get(res) => res.count(),
-            _ => unreachable!(),
+        let (creator, mut future) = match this {
+            Self::Empty(_) => unreachable!(),
+            Self::Data {
+                repo,
+                service,
+                creator,
+            } => {
+                let future = creator(repo, service);
+                *self = Self::Working { creator, future };
+                return self.poll_ready(cx);
+            }
+            Self::Working { creator, future } => (creator, future),
         };
 
-        match u32::try_from(res) {
-            Err(err) => Err(EtcdLimitRepoError::CouldNotConvertEtcdCount(res, err)),
-            Ok(num) => Ok(num),
-        }
+        let (res, repo, service) = match future.poll_unpin(cx) {
+            Poll::Pending => {
+                *self = Self::Working { creator, future };
+                return Poll::Pending;
+            }
+            Poll::Ready(res) => res,
+        };
+
+        *self = Self::Data {
+            repo,
+            service,
+            creator,
+        };
+        return Poll::Ready(res);
     }
 
-    #[instrument(skip(self))]
-    async fn add_req(&mut self, key: &str) -> Result<(), Self::Error> {
-        // we use map_request so we can recalculate the request everytime to get the current time
-        let service = self.service.clone().map_request(|()| {
-            let now = self.time.now();
-            let key = format!("limit_{}_{}", key, now.as_millis());
-            EtcdRequest::Put(key.into(), vec![1])
-        });
-        Retry::new(self.attempts.clone(), service)
-            .oneshot(())
-            .await?;
+    fn call(&mut self, req: Request) -> Self::Future {
+        let service = match self {
+            Self::Data { service, .. } => service,
+            _ => panic!("Call poll_ready first"),
+        };
 
-        Ok(())
+        let future = service.call(req);
+        LimitServiceFuture {
+            phantom: PhantomData,
+            future,
+        }
+    }
+}
+
+pin_project! {
+    struct LimitServiceFuture<R, F> {
+        phantom: PhantomData<R>,
+        #[pin]
+        future: F,
+    }
+}
+
+impl<R, T, E, F> Future for LimitServiceFuture<R, F>
+where
+    F: Future<Output = Result<T, E>>,
+    R: Error,
+    E: Error,
+{
+    type Output = Result<T, LimitServiceError<R, E>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        let res = ready!(this.future.poll(cx));
+        let res = res.map_err(|err| LimitServiceError::Service(err));
+
+        Poll::Ready(res)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use etcd_client::proto::PbRangeResponse;
-    use etcd_client::GetResponse;
-    use std::sync::Arc;
-    use std::time::{SystemTime as StdSystemTime, UNIX_EPOCH};
-    use tower::ServiceExt;
-    use tower_test::assert_request_eq;
-    use tower_test::mock;
-
-    use super::super::time::MockTime;
     use super::*;
 
-    #[tokio::test]
-    async fn test() {
-        let (service, mut handle) = mock::pair();
-        let service = service.map_result(|res| res.map_err(Arc::<dyn Error + Send + Sync>::from));
+    trait PinServiceTrait<Request> {
+        type Response;
+        type Error;
+        type Future: Future<Output = Result<Self::Response, Self::Error>>;
 
-        let now = StdSystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        let mut time = MockTime::new();
-        time.expect_now().returning(move || now);
-
-        let mut repo: EtcdLimitRepo<_, MockTime> = EtcdLimitRepo::builder()
-            .client(service)
-            .time(time)
-            .max_duration(Duration::from_millis(1000))
-            .build()
-            .expect("build failed");
-
-        let req =
-            tokio::spawn(async move { repo.get_limit("test", Duration::from_millis(500)).await });
-
-        let res = EtcdResponse::Get(GetResponse(PbRangeResponse {
-            header: None,
-            kvs: vec![],
-            more: false,
-            count: 200,
-        }));
-
-        let duration = now - Duration::from_millis(500);
-        let key = format!("limit_test_{}", duration.as_millis()).into();
-        let expected = EtcdRequest::GetWithOptions(key, GetOptions::new());
-        assert_request_eq!(handle, expected).send_response(res);
-
-        let actual = req.await.unwrap().unwrap();
-        assert_eq!(actual, 200);
+        fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>>;
+        fn call(self: Pin<&mut Self>, req: Request) -> Self::Future;
     }
+
+    #[test]
+    fn test() {}
 }
