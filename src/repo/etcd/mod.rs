@@ -6,6 +6,8 @@ use std::task::{Context, Poll};
 use tower::util::ServiceFn;
 use tower::{service_fn, Service};
 
+mod limit;
+
 #[derive(Clone, Debug)]
 pub(super) enum EtcdRequest {
     Put(Vec<u8>, Vec<u8>),
