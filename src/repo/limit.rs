@@ -63,7 +63,8 @@ enum LimitServiceError<R: Error, S: Error> {
 pin_project! {
     struct LimitService<Request, R, S, C, F> {
         phantom: PhantomData<Request>,
-        data: Option<(R, S)>,
+        repo: Option<R>,
+        service: S,
         creator: C,
         #[pin] fut: F,
     }
@@ -81,10 +82,11 @@ where
     ) -> impl Service<Request, Response = S::Response, Error = LimitServiceError<R::Error, S::Error>>
     {
         let creator = Self::creator;
-        let fut = creator(repo, service);
+        let fut = creator(repo);
         let inner = LimitService {
             phantom: PhantomData,
-            data: None,
+            repo: None,
+            service,
             creator,
             fut,
         };
@@ -94,21 +96,14 @@ where
 
     async fn creator(
         mut repo: R,
-        mut service: S,
-    ) -> (Result<(), LimitServiceError<R::Error, S::Error>>, R, S) {
+    ) -> (Result<(), LimitServiceError<R::Error, S::Error>>, R) {
         let duration = Duration::from_secs(10);
         let _limit = match repo.get_limit("test", duration).await {
             Ok(limit) => limit,
-            Err(err) => return (Err(LimitServiceError::Repo(err)), repo, service),
+            Err(err) => return (Err(LimitServiceError::Repo(err)), repo),
         };
 
-        // call the poll_ready of the inner service
-        let inner = poll_fn(|cx| service.poll_ready(cx));
-        if let Err(err) = inner.await {
-            return (Err(LimitServiceError::Service(err)), repo, service);
-        }
-
-        (Ok(()), repo, service)
+        (Ok(()), repo)
     }
 }
 
@@ -117,8 +112,8 @@ where
     R: LimitRepo + 'static,
     S: Service<Request>,
     S::Error: Error,
-    C: Fn(R, S) -> F,
-    F: Future<Output = (Result<(), LimitServiceError<R::Error, S::Error>>, R, S)>,
+    C: Fn(R) -> F,
+    F: Future<Output = (Result<(), LimitServiceError<R::Error, S::Error>>, R)>,
 {
     type Response = S::Response;
     type Error = LimitServiceError<R::Error, S::Error>;
@@ -127,27 +122,36 @@ where
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let mut this = self.as_mut().project();
 
-        if let Some((repo, service)) = this.data.take() {
-            let fut = (this.creator)(repo, service);
-            this.fut.set(fut)
+        if this.repo.is_some() {
+            let res = match this.service.poll_ready(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(res) => res.map_err(LimitServiceError::Service),
+            };
+
+            let repo = this.repo.take().unwrap();
+            let fut = (this.creator)(repo);
+            this.fut.set(fut);
+            return res.into()
         }
 
-        let (res, repo, service) = match this.fut.poll(cx) {
+        let (res, repo) = match this.fut.poll(cx) {
             Poll::Pending => return Poll::Pending,
-            Poll::Ready((res, repo, service)) => (res, repo, service),
+            Poll::Ready((res, repo)) => (res, repo),
         };
-        *this.data = Some((repo, service));
-        Poll::Ready(res)
+        if let Err(err) = res {
+            let fut = (this.creator)(repo);
+            self.as_mut().project().fut.set(fut);
+            return Err(err).into();
+        }
+
+        *this.repo = Some(repo);
+        self.poll_ready(cx)
     }
 
     fn call(&mut self, req: Request) -> Self::Future {
         let this = self.as_mut().project();
-        let service = match this.data {
-            Some((_, service)) => service,
-            None => panic!("Call ready first"),
-        };
 
-        let future = service.call(req);
+        let future = this.service.call(req);
         LimitServiceFuture {
             phantom: PhantomData,
             future,
