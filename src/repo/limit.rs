@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use futures_util::ready;
-use futures_util::FutureExt;
+use futures_util::future::poll_fn;
+use futures_util::{ready, FutureExt};
 use pin_project_lite::pin_project;
 use std::error::Error;
 use std::future::Future;
@@ -60,22 +60,16 @@ enum LimitServiceError<R: Error, S: Error> {
     Limited,
 }
 
-struct LimitService<Request, T> {
-    phantom: PhantomData<Request>,
-    inner: Pin<Box<T>>,
-}
-
 pin_project! {
-    #[project_replace = LimitServiceInnerReplace]
-    #[project = LimitServiceInnerProj]
-    enum LimitServiceInner<R, S, C, F> {
-        Empty,
-        Data { repo: R, service: S, creator: C },
-        Working { creator: C, #[pin] future: F },
+    struct LimitService<Request, R, S, C, F> {
+        phantom: PhantomData<Request>,
+        data: Option<(R, S)>,
+        creator: C,
+        #[pin] fut: F,
     }
 }
 
-impl<Request, R, S> LimitService<Request, LimitServiceInner<R, S, (), ()>>
+impl<Request, R, S> LimitService<Request, R, S, (), ()>
 where
     R: LimitRepo + 'static,
     S: Service<Request>,
@@ -87,37 +81,43 @@ where
     ) -> impl Service<Request, Response = S::Response, Error = LimitServiceError<R::Error, S::Error>>
     {
         let creator = Self::creator;
-        let future = creator(repo, service);
-        let inner = LimitServiceInner::Working { creator, future };
-
-        LimitService {
+        let fut = creator(repo, service);
+        let inner = LimitService {
             phantom: PhantomData,
-            inner: Box::pin(inner),
-        }
+            data: None,
+            creator,
+            fut,
+        };
+
+        Box::pin(inner)
     }
 
     async fn creator(
         mut repo: R,
-        service: S,
-    ) -> (Result<(), LimitServiceError<R::Error, S::Error>>, R, S)
-    {
+        mut service: S,
+    ) -> (Result<(), LimitServiceError<R::Error, S::Error>>, R, S) {
         let duration = Duration::from_secs(10);
         let _limit = match repo.get_limit("test", duration).await {
             Ok(limit) => limit,
             Err(err) => return (Err(LimitServiceError::Repo(err)), repo, service),
         };
 
+        // call the poll_ready of the inner service
+        let inner = poll_fn(|cx| service.poll_ready(cx));
+        if let Err(err) = inner.await {
+            return (Err(LimitServiceError::Service(err)), repo, service);
+        }
+
         (Ok(()), repo, service)
     }
-
 }
 
-impl<Request, R, S, C, F> Service<Request> for LimitService<Request, LimitServiceInner<R, S, C, F>>
+impl<Request, R, S, C, F> Service<Request> for Pin<Box<LimitService<Request, R, S, C, F>>>
 where
     R: LimitRepo + 'static,
     S: Service<Request>,
     S::Error: Error,
-    C: Fn(R, S) -> F + Copy,
+    C: Fn(R, S) -> F,
     F: Future<Output = (Result<(), LimitServiceError<R::Error, S::Error>>, R, S)>,
 {
     type Response = S::Response;
@@ -125,50 +125,26 @@ where
     type Future = LimitServiceFuture<R::Error, S::Future>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let inner = &mut self.inner;
+        let mut this = self.as_mut().project();
 
-        // if inner is working first just poll future using project
-        if let LimitServiceInnerProj::Working { future, creator } = inner.as_mut().project() {
-            let (res, repo, service) = match future.poll(cx) {
-                // future is pending so we just return this
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready((res, repo, service)) => (res, repo, service),
-            };
-
-            // here wo copy the creator
-            let creator = *creator;
-            inner.as_mut().project_replace(LimitServiceInner::Data {
-                creator,
-                service,
-                repo,
-            });
-            return Poll::Ready(res);
+        if let Some((repo, service)) = this.data.take() {
+            let fut = (this.creator)(repo, service);
+            this.fut.set(fut)
         }
 
-        let (repo, service, creator) =
-            match inner.as_mut().project_replace(LimitServiceInner::Empty) {
-                LimitServiceInnerReplace::Data {
-                    repo,
-                    service,
-                    creator,
-                } => (repo, service, creator),
-                // inner must be data as we catch working above and empty always gets replaced before returning
-                _ => unreachable!(),
-            };
-        let future = creator(repo, service);
-
-        inner
-            .as_mut()
-            .project_replace(LimitServiceInner::Working { future, creator });
-
-        // recursive call to self to land in above if clause
-        self.poll_ready(cx)
+        let (res, repo, service) = match this.fut.poll(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready((res, repo, service)) => (res, repo, service),
+        };
+        *this.data = Some((repo, service));
+        Poll::Ready(res)
     }
 
     fn call(&mut self, req: Request) -> Self::Future {
-        let service = match self.inner.as_mut().project() {
-            LimitServiceInnerProj::Data { service, .. } => service,
-            _ => panic!("Call ready first"),
+        let this = self.as_mut().project();
+        let service = match this.data {
+            Some((_, service)) => service,
+            None => panic!("Call ready first"),
         };
 
         let future = service.call(req);
