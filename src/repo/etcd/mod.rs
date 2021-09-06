@@ -137,7 +137,7 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "container"))]
 mod tests {
     use etcd_client::proto::{PbPutResponse, PbRangeResponse};
     use etcd_client::Client;
@@ -215,7 +215,6 @@ mod tests {
             .unwrap()
     }
 
-    #[cfg(feature = "container")]
     #[tokio::test]
     async fn test() {
         let cli = clients::Cli::default();
