@@ -49,9 +49,9 @@ impl TryFrom<&str> for Uri {
     }
 }
 
-impl Into<hyper::Uri> for &Uri {
-    fn into(self) -> hyper::Uri {
-        self.0.clone()
+impl From<&Uri> for hyper::Uri {
+    fn from(input: &Uri) -> Self {
+        input.0.clone()
     }
 }
 

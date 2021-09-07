@@ -13,7 +13,7 @@ mod server;
 #[instrument]
 fn main() -> Result<()> {
     match tracing_subscriber::fmt::try_init() {
-        Err(e) => Err(anyhow!(e))?,
+        Err(e) => return Err(anyhow!(e)),
         Ok(()) => {}
     };
 

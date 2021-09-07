@@ -1,6 +1,5 @@
 use async_trait::async_trait;
-use futures_util::future::poll_fn;
-use futures_util::{ready, FutureExt};
+use futures_util::ready;
 use pin_project_lite::pin_project;
 use std::error::Error;
 use std::future::Future;
@@ -83,15 +82,14 @@ where
     {
         let creator = Self::creator;
         let fut = creator(repo);
-        let inner = LimitService {
+
+        Box::pin(LimitService {
             phantom: PhantomData,
             repo: None,
             service,
             creator,
             fut,
-        };
-
-        Box::pin(inner)
+        })
     }
 
     async fn creator(
@@ -123,21 +121,14 @@ where
         let mut this = self.as_mut().project();
 
         if this.repo.is_some() {
-            let res = match this.service.poll_ready(cx) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(res) => res.map_err(LimitServiceError::Service),
-            };
+            let res = ready!(this.service.poll_ready(cx));
 
             let repo = this.repo.take().unwrap();
-            let fut = (this.creator)(repo);
-            this.fut.set(fut);
-            return res.into()
+            this.fut.set((this.creator)(repo));
+            return res.map_err(LimitServiceError::Service).into()
         }
 
-        let (res, repo) = match this.fut.poll(cx) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready((res, repo)) => (res, repo),
-        };
+        let (res, repo) = ready!(this.fut.poll(cx));
         if let Err(err) = res {
             let fut = (this.creator)(repo);
             self.as_mut().project().fut.set(fut);
@@ -178,7 +169,7 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
         let res = ready!(this.future.poll(cx));
-        let res = res.map_err(|err| LimitServiceError::Service(err));
+        let res = res.map_err(LimitServiceError::Service);
 
         Poll::Ready(res)
     }
