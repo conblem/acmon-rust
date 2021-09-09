@@ -60,22 +60,21 @@ enum LimitServiceError<R: Error, S: Error> {
 }
 
 pin_project! {
-    struct LimitService<Request, R, S, C, F> {
+    struct LimitService<Request, S, C, F> {
         phantom: PhantomData<Request>,
-        repo: Option<R>,
+        outer_ready: bool,
         service: S,
         creator: C,
         #[pin] fut: F,
     }
 }
 
-impl<Request, R, S> LimitService<Request, R, S, (), ()>
+impl<Request, S> LimitService<Request, S, (), ()>
 where
-    R: LimitRepo + 'static,
     S: Service<Request>,
     S::Error: Error,
 {
-    fn new(
+    fn new<R: LimitRepo + 'static>(
         repo: R,
         service: S,
     ) -> impl Service<Request, Response = S::Response, Error = LimitServiceError<R::Error, S::Error>>
@@ -85,14 +84,14 @@ where
 
         Box::pin(LimitService {
             phantom: PhantomData,
-            repo: None,
+            outer_ready: false,
             service,
             creator,
             fut,
         })
     }
 
-    async fn creator(
+    async fn creator<R: LimitRepo + 'static>(
         mut repo: R,
     ) -> (Result<(), LimitServiceError<R::Error, S::Error>>, R) {
         let duration = Duration::from_secs(10);
@@ -105,7 +104,7 @@ where
     }
 }
 
-impl<Request, R, S, C, F> Service<Request> for Pin<Box<LimitService<Request, R, S, C, F>>>
+impl<Request, R, S, C, F> Service<Request> for Pin<Box<LimitService<Request, S, C, F>>>
 where
     R: LimitRepo + 'static,
     S: Service<Request>,
@@ -120,11 +119,10 @@ where
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let mut this = self.as_mut().project();
 
-        if this.repo.is_some() {
+        if *this.outer_ready {
             let res = ready!(this.service.poll_ready(cx));
 
-            let repo = this.repo.take().unwrap();
-            this.fut.set((this.creator)(repo));
+            *this.outer_ready = false;
             return res.map_err(LimitServiceError::Service).into()
         }
 
@@ -135,7 +133,7 @@ where
             return Err(err).into();
         }
 
-        *this.repo = Some(repo);
+        *this.outer_ready = true;
         self.poll_ready(cx)
     }
 
