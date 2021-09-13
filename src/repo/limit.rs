@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use futures_util::ready;
+use futures_util::future::Map;
+use futures_util::{ready, FutureExt};
 use pin_project_lite::pin_project;
 use std::error::Error;
 use std::future::Future;
@@ -114,22 +115,25 @@ where
 {
     type Response = S::Response;
     type Error = LimitServiceError<R::Error, S::Error>;
-    type Future = LimitServiceFuture<R::Error, S::Future>;
+    type Future = LimitServiceFuture<S::Future, S::Response, S::Error, R::Error>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let mut this = self.as_mut().project();
+        let this = self.as_mut().project();
 
         if *this.outer_ready {
             let res = ready!(this.service.poll_ready(cx));
 
             *this.outer_ready = false;
-            return res.map_err(LimitServiceError::Service).into()
+            return res.map_err(LimitServiceError::Service).into();
         }
 
         let (res, repo) = ready!(this.fut.poll(cx));
+
+        let mut this = self.as_mut().project();
+        let fut = (this.creator)(repo);
+        this.fut.set(fut);
+
         if let Err(err) = res {
-            let fut = (this.creator)(repo);
-            self.as_mut().project().fut.set(fut);
             return Err(err).into();
         }
 
@@ -139,38 +143,28 @@ where
 
     fn call(&mut self, req: Request) -> Self::Future {
         let this = self.as_mut().project();
-
-        let future = this.service.call(req);
-        LimitServiceFuture {
-            phantom: PhantomData,
-            future,
+        if *this.outer_ready {
+            panic!(
+                "Poll ready needs to be called first, state does not guarantee that inner is ready"
+            );
         }
+
+        // use to_limit_service_error to map Future to a LimitServiceFuture
+        this.service.call(req).map(to_limit_service_error)
     }
 }
 
-pin_project! {
-    struct LimitServiceFuture<R, F> {
-        phantom: PhantomData<R>,
-        #[pin]
-        future: F,
-    }
-}
+// Maps the result of F to LimitServiceError
+type LimitServiceFuture<F, T, E, R> =
+    Map<F, fn(Result<T, E>) -> Result<T, LimitServiceError<R, E>>>;
 
-impl<R, T, E, F> Future for LimitServiceFuture<R, F>
+// Matching map function for LimitServiceFuture
+fn to_limit_service_error<T, E, R>(res: Result<T, E>) -> Result<T, LimitServiceError<R, E>>
 where
-    F: Future<Output = Result<T, E>>,
     R: Error,
     E: Error,
 {
-    type Output = Result<T, LimitServiceError<R, E>>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-        let res = ready!(this.future.poll(cx));
-        let res = res.map_err(LimitServiceError::Service);
-
-        Poll::Ready(res)
-    }
+    res.map_err(LimitServiceError::Service)
 }
 
 #[cfg(test)]
