@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use etcd_client::GetOptions;
 use std::convert::TryFrom;
 use std::error::Error;
 use std::future::Future;
@@ -13,7 +12,9 @@ use tracing::instrument;
 use super::super::limit::{LimitRepo, LimitRepoBuilder, ToLimitRepoBuilder};
 use super::super::policy::RandomAttempts;
 use super::super::time::Time;
-use super::{EtcdRequest, EtcdResponse};
+use super::request::{EtcdRequest, GetOptions};
+use crate::repo::etcd::request::{Put, ToGetRequest, ToPutRequest};
+use crate::repo::etcd::EtcdResponse;
 
 #[derive(Error, Debug)]
 enum EtcdLimitRepoBuilderError {
@@ -135,12 +136,11 @@ where
         let start = now - range;
         let start = start.as_millis();
 
-        let options = GetOptions::new()
+        let req = GetOptions::default()
             .with_range(format!("limit_{}_{}", key, future))
-            .with_count_only();
+            .with_count_only()
+            .request(format!("limit_{}_{}", key, start));
 
-        let key = format!("limit_{}_{}", key, start).into();
-        let req = EtcdRequest::GetWithOptions(key, options);
         let res = match (&mut self.service).oneshot(req).await? {
             EtcdResponse::Get(res) => res.count(),
             _ => unreachable!(),
@@ -158,8 +158,9 @@ where
         let service = self.service.clone().map_request(|()| {
             let now = self.time.now();
             let key = format!("limit_{}_{}", key, now.as_millis());
-            EtcdRequest::Put(key.into(), vec![1])
+            Put::default().request(key, vec![1])
         });
+
         Retry::new(self.attempts.clone(), service)
             .oneshot(())
             .await?;
@@ -179,6 +180,7 @@ mod tests {
 
     use super::super::super::time::MockTime;
     use super::*;
+    use crate::repo::etcd::request::Get;
 
     #[tokio::test]
     async fn test() {
@@ -207,8 +209,13 @@ mod tests {
         }));
 
         let duration = now - Duration::from_millis(500);
-        let key = format!("limit_test_{}", duration.as_millis()).into();
-        let expected = EtcdRequest::GetWithOptions(key, GetOptions::new());
+        let duration = duration.as_millis();
+        let future = duration + Duration::from_secs(600).as_millis();
+
+        let expected = GetOptions::default()
+            .with_range(format!("limit_test_{}", future))
+            .with_count_only()
+            .request(format!("limit_test_{}", duration));
         assert_request_eq!(handle, expected).send_response(res);
 
         let actual = req.await.unwrap().unwrap();

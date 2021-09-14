@@ -1,55 +1,17 @@
 use etcd_client::Error as EtcdError;
-use etcd_client::{Client, GetOptions, GetResponse, KvClient, PutOptions, PutResponse};
+use etcd_client::{
+    Client, GetOptions as EtcdGetOptions, GetResponse, KvClient, PutOptions, PutResponse,
+};
 use std::future::Future;
 use std::marker::PhantomData;
 use std::task::{Context, Poll};
 use tower::util::ServiceFn;
 use tower::{service_fn, Service};
 
+use request::EtcdRequest;
+
 mod limit;
-
-#[derive(Clone, Debug)]
-pub(super) enum EtcdRequest {
-    Put(Vec<u8>, Vec<u8>),
-    PutWithOptions(Vec<u8>, Vec<u8>, PutOptions),
-    Get(Vec<u8>),
-    GetWithOptions(Vec<u8>, GetOptions),
-}
-
-impl EtcdRequest {
-    fn put<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(key: K, value: V) -> Self {
-        Self::Put(key.into(), value.into())
-    }
-    fn put_with_options<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(
-        key: K,
-        value: V,
-        options: PutOptions,
-    ) -> Self {
-        Self::PutWithOptions(key.into(), value.into(), options)
-    }
-    fn get<K: Into<Vec<u8>>>(key: K) -> Self {
-        Self::Get(key.into())
-    }
-    fn get_with_options<K: Into<Vec<u8>>>(key: K, options: GetOptions) -> Self {
-        Self::GetWithOptions(key.into(), options)
-    }
-}
-
-// we cant compare options so we only implement this in tests
-#[cfg(test)]
-impl PartialEq for EtcdRequest {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Put(key, val), Self::Put(key2, val2)) => key == key2 && val == val2,
-            (Self::PutWithOptions(val, key, _), Self::PutWithOptions(val2, key2, _)) => {
-                val == val2 && key == key2
-            }
-            (Self::Get(key), Self::Get(key2)) => key == key2,
-            (Self::GetWithOptions(key, _), Self::GetWithOptions(key2, _)) => key == key2,
-            _ => false,
-        }
-    }
-}
+mod request;
 
 #[derive(Clone, Debug)]
 pub(super) enum EtcdResponse {
@@ -82,14 +44,12 @@ impl From<GetResponse> for EtcdResponse {
 
 async fn request(mut client: KvClient, req: EtcdRequest) -> Result<EtcdResponse, EtcdError> {
     match req {
-        EtcdRequest::Put(key, value) => client.put(key, value, None).await.map(Into::into),
-        EtcdRequest::PutWithOptions(key, value, options) => {
-            let options = options.into();
-            client.put(key, value, options).await.map(Into::into)
-        }
-        EtcdRequest::Get(key) => client.get(key, None).await.map(Into::into),
-        EtcdRequest::GetWithOptions(key, options) => {
-            let options = options.into();
+        EtcdRequest::Put(key, value, options) => client.put(key, value, None).await.map(Into::into),
+        EtcdRequest::Get(key, options) => {
+            let options = match options {
+                Some(options) => Some(options.into()),
+                None => None,
+            };
             client.get(key, options).await.map(Into::into)
         }
     }
