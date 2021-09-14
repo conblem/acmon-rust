@@ -130,17 +130,17 @@ where
 
         let now = self.time.now();
 
-        let future = now + Duration::from_secs(600);
+        // we add 60 seconds in the future if the time of another node is in the future
+        let future = now + Duration::from_secs(60);
         let future = future.as_millis();
-
         let start = now - range;
-        let start = start.as_millis();
 
         let req = GetOptions::default()
             .with_range(format!("limit_{}_{}", key, future))
             .with_count_only()
-            .request(format!("limit_{}_{}", key, start));
+            .build(format!("limit_{}_{}", key, start.as_millis()));
 
+        // todo: fix this
         let res = match (&mut self.service).oneshot(req).await? {
             EtcdResponse::Get(res) => res.count(),
             _ => unreachable!(),
@@ -158,7 +158,7 @@ where
         let service = self.service.clone().map_request(|()| {
             let now = self.time.now();
             let key = format!("limit_{}_{}", key, now.as_millis());
-            Put::default().request(key, vec![1])
+            Put::default().build(key, vec![1])
         });
 
         Retry::new(self.attempts.clone(), service)
@@ -194,12 +194,12 @@ mod tests {
         let mut repo: EtcdLimitRepo<_, MockTime> = EtcdLimitRepo::builder()
             .client(service)
             .time(time)
-            .max_duration(Duration::from_millis(1000))
+            .max_duration(Duration::from_secs(1000))
             .build()
             .expect("build failed");
 
         let req =
-            tokio::spawn(async move { repo.get_limit("test", Duration::from_millis(500)).await });
+            tokio::spawn(async move { repo.get_limit("test", Duration::from_secs(500)).await });
 
         let res = EtcdResponse::Get(GetResponse(PbRangeResponse {
             header: None,
@@ -208,14 +208,13 @@ mod tests {
             count: 200,
         }));
 
-        let duration = now - Duration::from_millis(500);
-        let duration = duration.as_millis();
-        let future = duration + Duration::from_secs(600).as_millis();
+        let start = now - Duration::from_secs(500);
+        let future = now + Duration::from_secs(60);
 
         let expected = GetOptions::default()
-            .with_range(format!("limit_test_{}", future))
+            .with_range(format!("limit_test_{}", future.as_millis()))
             .with_count_only()
-            .request(format!("limit_test_{}", duration));
+            .build(format!("limit_test_{}", start.as_millis()));
         assert_request_eq!(handle, expected).send_response(res);
 
         let actual = req.await.unwrap().unwrap();

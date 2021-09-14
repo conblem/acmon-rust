@@ -8,18 +8,32 @@ pub(crate) enum EtcdRequest {
 }
 
 pub(crate) trait ToPutRequest {
-    fn request<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(&mut self, key: K, val: V) -> EtcdRequest;
+    fn build<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(&mut self, key: K, val: V) -> EtcdRequest;
+
+    fn request<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(key: K, val: V) -> EtcdRequest
+    where
+        Self: Default,
+    {
+        Self::default().build(key, val)
+    }
 }
 
 pub(crate) trait ToGetRequest {
-    fn request<K: Into<Vec<u8>>>(&mut self, key: K) -> EtcdRequest;
+    fn build<K: Into<Vec<u8>>>(&mut self, key: K) -> EtcdRequest;
+
+    fn request<K: Into<Vec<u8>>>(key: K) -> EtcdRequest
+    where
+        Self: Default,
+    {
+        Self::default().build(key)
+    }
 }
 
 #[derive(Default)]
 pub(crate) struct Put;
 
 impl ToPutRequest for Put {
-    fn request<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(&mut self, key: K, val: V) -> EtcdRequest {
+    fn build<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(&mut self, key: K, val: V) -> EtcdRequest {
         EtcdRequest::Put(key.into(), val.into(), None)
     }
 }
@@ -28,7 +42,7 @@ impl ToPutRequest for Put {
 pub(crate) struct Get;
 
 impl ToGetRequest for Get {
-    fn request<K: Into<Vec<u8>>>(&mut self, key: K) -> EtcdRequest {
+    fn build<K: Into<Vec<u8>>>(&mut self, key: K) -> EtcdRequest {
         EtcdRequest::Get(key.into(), None)
     }
 }
@@ -68,7 +82,7 @@ impl GetOptions {
 }
 
 impl ToGetRequest for GetOptions {
-    fn request<K: Into<Vec<u8>>>(&mut self, key: K) -> EtcdRequest {
+    fn build<K: Into<Vec<u8>>>(&mut self, key: K) -> EtcdRequest {
         let options = mem::take(self);
         EtcdRequest::Get(key.into(), Some(options))
     }
@@ -108,7 +122,7 @@ mod tests {
 
     #[test]
     fn put() {
-        let request = Put::default().request("hallo", "welt");
+        let request = Put::request("hallo", "welt");
         let (key, val, options) = unwrap_put(request);
 
         assert_eq!(key, b"hallo");
@@ -118,7 +132,7 @@ mod tests {
 
     #[test]
     fn get() {
-        let request = Get::default().request("hallo");
+        let request = Get::request("hallo");
         let (key, options) = unwrap_get(request);
 
         assert_eq!(key, b"hallo");
@@ -133,7 +147,7 @@ mod tests {
         let request = GetOptions::default()
             .with_count_only()
             .with_range("hallo_100")
-            .request("hallo_1");
+            .build("hallo_1");
         let (key, options) = unwrap_get(request);
         let options = options.unwrap();
 
