@@ -12,10 +12,10 @@ use tracing::instrument;
 use super::super::limit::{LimitRepo, LimitRepoBuilder, ToLimitRepoBuilder};
 use super::super::policy::RandomAttempts;
 use super::super::time::Time;
-use super::request::{EtcdRequest, GetOptions};
-use crate::repo::etcd::request::{Put, ToGetRequest, ToPutRequest};
-use crate::repo::etcd::EtcdResponse;
+use super::request::{EtcdRequest, GetOptions, Put, ToGetRequest, ToPutRequest};
+use super::EtcdResponse;
 
+// todo: dont think this should be failable
 #[derive(Error, Debug)]
 enum EtcdLimitRepoBuilderError {
     #[error("Client not set")]
@@ -90,7 +90,7 @@ enum EtcdLimitRepoError<E: Error + Send + Sync + 'static> {
     #[error("Could not convert Etcd's {0} to an u32: {1}")]
     CouldNotConvertEtcdCount(i64, TryFromIntError),
 
-    #[error("Duration {0} is longer than max {0}")]
+    #[error("Duration {0} is longer than max {1}")]
     RangeLongerThanMax(u128, u128),
 
     #[error(transparent)]
@@ -143,7 +143,7 @@ where
         // todo: fix this
         let res = match (&mut self.service).oneshot(req).await? {
             EtcdResponse::Get(res) => res.count(),
-            _ => unreachable!(),
+            res => unreachable!("{:?}", res),
         };
 
         match u32::try_from(res) {
@@ -180,7 +180,6 @@ mod tests {
 
     use super::super::super::time::MockTime;
     use super::*;
-    use crate::repo::etcd::request::Get;
 
     #[tokio::test]
     async fn test() {

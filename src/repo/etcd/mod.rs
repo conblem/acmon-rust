@@ -1,11 +1,6 @@
 use etcd_client::Error as EtcdError;
-use etcd_client::{
-    Client, GetOptions as EtcdGetOptions, GetResponse, KvClient, PutOptions, PutResponse,
-};
+use etcd_client::{Client, GetResponse, KvClient, PutResponse};
 use std::future::Future;
-use std::marker::PhantomData;
-use std::task::{Context, Poll};
-use tower::util::ServiceFn;
 use tower::{service_fn, Service};
 
 use request::EtcdRequest;
@@ -55,45 +50,19 @@ async fn request(mut client: KvClient, req: EtcdRequest) -> Result<EtcdResponse,
     }
 }
 
-struct EtcdService<R, F>(ServiceFn<R>, PhantomData<F>);
+struct EtcdService;
 
-impl<R: Clone, F> Clone for EtcdService<R, F> {
-    fn clone(&self) -> Self {
-        EtcdService(self.0.clone(), PhantomData)
-    }
-}
-
-impl EtcdService<(), ()> {
+impl EtcdService {
     fn new(
         client: Client,
     ) -> impl Service<EtcdRequest, Future = impl Future<Output = Result<EtcdResponse, EtcdError>>> + Clone
     {
         let client = client.kv_client();
 
-        let service = service_fn(move |req| {
+        service_fn(move |req| {
             let client = client.clone();
             request(client, req)
-        });
-
-        EtcdService(service, PhantomData)
-    }
-}
-
-impl<R, F> Service<EtcdRequest> for EtcdService<R, F>
-where
-    R: FnMut(EtcdRequest) -> F,
-    F: Future<Output = Result<EtcdResponse, EtcdError>>,
-{
-    type Response = EtcdResponse;
-    type Error = EtcdError;
-    type Future = F;
-
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.0.poll_ready(cx)
-    }
-
-    fn call(&mut self, req: EtcdRequest) -> Self::Future {
-        self.0.call(req)
+        })
     }
 }
 
@@ -106,6 +75,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+    use super::request::{Put, Get, ToPutRequest, ToGetRequest};
 
     fn ok<T, E>(input: Result<T, E>) -> T {
         match input {
@@ -185,18 +155,18 @@ mod tests {
         let service = ok(service.ready().await);
 
         // etcd is empty so count is 0
-        let res = service.call(EtcdRequest::get("test")).await.unwrap();
+        let res = service.call(Get::request("test")).await.unwrap();
         assert_eq!(get_response(res).count(), 0);
 
         // put a new kv into the store so there is no prev key
         let res = service
-            .call(EtcdRequest::put("test", "is a value"))
+            .call(Put::request("test", "is a value"))
             .await
             .unwrap();
         assert!(put_response(res).prev_key().is_none());
 
         // now we get the kv so count should be one
-        let res = service.call(EtcdRequest::get("test")).await.unwrap();
+        let res = service.call(Get::request("test")).await.unwrap();
         let res = get_response(res);
         assert_eq!(res.count(), 1);
         let value = &res.kvs()[0];
