@@ -1,9 +1,9 @@
-use etcd_client::GetOptions as EtcdGetOptions;
+use etcd_client::{GetOptions as EtcdGetOptions, PutOptions as EtcdPutOptions};
 use std::mem;
 
 #[derive(PartialEq, Debug)]
 pub(crate) enum EtcdRequest {
-    Put(Vec<u8>, Vec<u8>, Option<()>),
+    Put(Vec<u8>, Vec<u8>, Option<PutOptions>),
     Get(Vec<u8>, Option<GetOptions>),
 }
 
@@ -38,6 +38,21 @@ impl ToPutRequest for Put {
     }
 }
 
+#[derive(PartialEq, Default, Debug)]
+pub(crate) struct PutOptions;
+
+impl From<PutOptions> for EtcdPutOptions {
+    fn from(_options: PutOptions) -> Self {
+        todo!()
+    }
+}
+
+impl ToPutRequest for PutOptions {
+    fn build<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(&mut self, _key: K, _val: V) -> EtcdRequest {
+        todo!()
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Get;
 
@@ -53,7 +68,7 @@ pub(crate) struct GetOptions {
     count_only: bool,
 }
 
-// todo: write test for this using docker
+// todo: write tests for this using docker
 impl From<GetOptions> for EtcdGetOptions {
     fn from(options: GetOptions) -> Self {
         let result = EtcdGetOptions::new();
@@ -99,7 +114,7 @@ mod tests {
         unwrap_put(request);
     }
 
-    fn unwrap_put(request: EtcdRequest) -> (Vec<u8>, Vec<u8>, Option<()>) {
+    fn unwrap_put(request: EtcdRequest) -> (Vec<u8>, Vec<u8>, Option<PutOptions>) {
         match request {
             EtcdRequest::Put(key, val, option) => (key, val, option),
             _ => unreachable!(),

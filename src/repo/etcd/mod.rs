@@ -5,6 +5,7 @@ use tower::{service_fn, Service};
 
 use request::EtcdRequest;
 
+mod cell;
 mod limit;
 mod request;
 
@@ -37,14 +38,15 @@ impl From<GetResponse> for EtcdResponse {
     }
 }
 
+// todo: this this method into of from<PutOptions> for EtcdPutOptions...
 async fn request(mut client: KvClient, req: EtcdRequest) -> Result<EtcdResponse, EtcdError> {
     match req {
-        EtcdRequest::Put(key, value, options) => client.put(key, value, None).await.map(Into::into),
+        EtcdRequest::Put(key, value, options) => {
+            let options = options.map(Into::into);
+            client.put(key, value, options).await.map(Into::into)
+        }
         EtcdRequest::Get(key, options) => {
-            let options = match options {
-                Some(options) => Some(options.into()),
-                None => None,
-            };
+            let options = options.map(Into::into);
             client.get(key, options).await.map(Into::into)
         }
     }
@@ -74,8 +76,8 @@ mod tests {
     use testcontainers::{clients, Container, Docker, Image};
     use tower::ServiceExt;
 
+    use super::request::{Get, Put, ToGetRequest, ToPutRequest};
     use super::*;
-    use super::request::{Put, Get, ToPutRequest, ToGetRequest};
 
     fn ok<T, E>(input: Result<T, E>) -> T {
         match input {

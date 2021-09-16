@@ -5,8 +5,7 @@ use std::future::Future;
 use std::num::TryFromIntError;
 use std::time::{Duration, SystemTime};
 use thiserror::Error;
-use tower::retry::Retry;
-use tower::{Service, ServiceExt};
+use tower::{Service, ServiceBuilder, ServiceExt};
 use tracing::instrument;
 
 use super::super::limit::{LimitRepo, LimitRepoBuilder, ToLimitRepoBuilder};
@@ -14,6 +13,7 @@ use super::super::policy::RandomAttempts;
 use super::super::time::Time;
 use super::request::{EtcdRequest, GetOptions, Put, ToGetRequest, ToPutRequest};
 use super::EtcdResponse;
+use crate::repo::etcd::cell::CloneOnceService;
 
 // todo: dont think this should be failable
 #[derive(Error, Debug)]
@@ -44,13 +44,11 @@ impl<S, T> Default for EtcdLimitRepoBuilder<S, T> {
 impl<S, T> EtcdLimitRepoBuilder<S, T> {
     fn client(&mut self, service: S) -> &mut Self {
         self.service = Some(service);
-
         self
     }
 
     fn time(&mut self, time: T) -> &mut Self {
         self.time = Some(time);
-
         self
     }
 }
@@ -61,7 +59,6 @@ impl<S, T> LimitRepoBuilder for EtcdLimitRepoBuilder<S, T> {
 
     fn max_duration(&mut self, range: Duration) -> &mut Self {
         self.max_lease = range;
-
         self
     }
 
@@ -114,7 +111,7 @@ where
         + 'static,
     F: Future<Output = Result<EtcdResponse, E>> + Send + Sync,
     E: Error + Send + Sync + 'static,
-    T: Time,
+    T: Time + Clone,
 {
     type Builder = EtcdLimitRepoBuilder<S, T>;
     type Error = EtcdLimitRepoError<E>;
@@ -140,7 +137,6 @@ where
             .with_count_only()
             .build(format!("limit_{}_{}", key, start.as_millis()));
 
-        // todo: fix this
         let res = match (&mut self.service).oneshot(req).await? {
             EtcdResponse::Get(res) => res.count(),
             res => unreachable!("{:?}", res),
@@ -155,13 +151,17 @@ where
     #[instrument(skip(self))]
     async fn add_req(&mut self, key: &str) -> Result<(), Self::Error> {
         // we use map_request so we can recalculate the request everytime to get the current time
-        let service = self.service.clone().map_request(|()| {
-            let now = self.time.now();
+        let time = self.time.clone();
+        let mut service = (&mut self.service).map_request(|()| {
+            let now = time.now();
             let key = format!("limit_{}_{}", key, now.as_millis());
-            Put::default().build(key, vec![1])
+            Put::request(key, vec![1])
         });
 
-        Retry::new(self.attempts.clone(), service)
+        ServiceBuilder::new()
+            .retry(self.attempts)
+            // safe to use CellOptionService as clone only happens once because of oneshot()
+            .service(CloneOnceService::new(&mut service))
             .oneshot(())
             .await?;
 
@@ -173,13 +173,24 @@ where
 mod tests {
     use etcd_client::proto::PbRangeResponse;
     use etcd_client::GetResponse;
+    use mockall::mock;
     use std::sync::Arc;
     use std::time::{SystemTime as StdSystemTime, UNIX_EPOCH};
     use tower::ServiceExt;
     use tower_test::{assert_request_eq, mock};
 
-    use super::super::super::time::MockTime;
+    use super::super::super::time::Time;
     use super::*;
+
+    mock! {
+        Time {}
+        impl Time for Time {
+            fn now(&self) -> Duration;
+        }
+        impl Clone for Time {
+            fn clone(&self) -> Self;
+        }
+    }
 
     #[tokio::test]
     async fn test() {
@@ -188,7 +199,12 @@ mod tests {
 
         let now = StdSystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let mut time = MockTime::new();
-        time.expect_now().returning(move || now);
+        time.expect_clone().returning(move || {
+            let mut time = MockTime::new();
+            time.expect_now().returning(move || now);
+            time
+        });
+        let time = time.clone();
 
         let mut repo: EtcdLimitRepo<_, MockTime> = EtcdLimitRepo::builder()
             .client(service)

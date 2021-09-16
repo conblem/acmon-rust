@@ -6,7 +6,7 @@ use std::task::{Context, Poll};
 use tokio::time::{Duration, Sleep};
 use tower::retry::Policy;
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub(super) struct RandomAttempts {
     attempts: usize,
 }
