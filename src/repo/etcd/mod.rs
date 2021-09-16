@@ -38,7 +38,7 @@ impl From<GetResponse> for EtcdResponse {
     }
 }
 
-// todo: this this method into of from<PutOptions> for EtcdPutOptions...
+// todo: this method into of from<PutOptions> for EtcdPutOptions...
 async fn request(mut client: KvClient, req: EtcdRequest) -> Result<EtcdResponse, EtcdError> {
     match req {
         EtcdRequest::Put(key, value, options) => {
