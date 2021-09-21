@@ -1,6 +1,6 @@
 use std::time::{Duration, UNIX_EPOCH};
 
-pub(super) trait Time: Clone + Send + Sync {
+pub(super) trait Time: Send + Sync {
     fn now(&self) -> Duration;
 }
 

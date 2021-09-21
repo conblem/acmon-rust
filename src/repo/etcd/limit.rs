@@ -73,7 +73,7 @@ where
 
         let mapped_service = service
             .clone()
-            .map_request(recalculate_time as fn((String, T)) -> EtcdRequest);
+            .map_request(recalculate_time as fn((&str, &T)) -> EtcdRequest);
 
         let time = self
             .time
@@ -108,11 +108,11 @@ where
 {
     max_lease: Duration,
     service: S,
-    mapped_service: MapRequest<S, fn((String, T)) -> EtcdRequest>,
+    mapped_service: MapRequest<S, fn((&str, &T)) -> EtcdRequest>,
     time: T,
 }
 
-fn recalculate_time<T: Time>(key_and_time: (String, T)) -> EtcdRequest {
+fn recalculate_time<T: Time>(key_and_time: (&str, &T)) -> EtcdRequest {
     let (key, time) = key_and_time;
 
     let now = time.now();
@@ -169,10 +169,11 @@ where
 
     #[instrument(skip(self))]
     async fn add_req(&self, key: &str) -> Result<(), Self::Error> {
-        let time = self.time.clone();
+        let time = &self.time;
+
         self.mapped_service
             .clone()
-            .oneshot((key.to_string(), time))
+            .oneshot((key, time))
             .await?;
 
         Ok(())
