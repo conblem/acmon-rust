@@ -16,8 +16,8 @@ pub(super) trait LimitRepo {
     type Builder: LimitRepoBuilder<Repo = Self>;
     type Error: Error + Send + Sync + 'static;
 
-    async fn get_limit(&mut self, key: &str, range: Duration) -> Result<u32, Self::Error>;
-    async fn add_req(&mut self, key: &str) -> Result<(), Self::Error>;
+    async fn get_limit(&self, key: &str, range: Duration) -> Result<u32, Self::Error>;
+    async fn add_req(&self, key: &str) -> Result<(), Self::Error>;
 }
 
 pub(super) trait ToLimitRepoBuilder {
@@ -93,7 +93,7 @@ where
     }
 
     async fn creator<R: LimitRepo + 'static>(
-        mut repo: R,
+        repo: R,
     ) -> (Result<(), LimitServiceError<R::Error, S::Error>>, R) {
         let duration = Duration::from_secs(10);
         let _limit = match repo.get_limit("test", duration).await {

@@ -1,10 +1,10 @@
-use std::time::{Duration, SystemTime as StdSystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
-pub(super) trait Time: Send + Sync {
+pub(super) trait Time: Clone + Send + Sync {
     fn now(&self) -> Duration;
 }
 
-#[derive(Default, Copy, Clone)]
+#[derive(Clone, Default)]
 pub(super) struct SystemTime;
 
 impl Time for SystemTime {

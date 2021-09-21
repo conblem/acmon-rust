@@ -99,6 +99,7 @@ mod tests {
         T::Future: Send,
     {
         async fn hallo(&mut self) -> Result<&'static str, &'static str> {
+            // is safe because of oneshot service only gets called once
             ServiceBuilder::new()
                 .retry(TestPolicy(self.1))
                 .service(CloneOnceService::new(&mut self.0))
