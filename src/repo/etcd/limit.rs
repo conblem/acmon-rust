@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use etcd_client::{GetResponse, PutResponse};
 use std::convert::TryFrom;
 use std::error::Error;
 use std::num::TryFromIntError;
@@ -11,7 +12,6 @@ use tracing::instrument;
 use super::super::limit::{LimitRepo, LimitRepoBuilder, ToLimitRepoBuilder};
 use super::super::time::{SystemTime, Time};
 use super::request::{Get, Put};
-use etcd_client::{GetResponse, PutResponse};
 
 struct EtcdLimitRepoBuilder<R, U, T = SystemTime> {
     read_service: Option<R>,
