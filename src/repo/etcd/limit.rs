@@ -215,7 +215,6 @@ mod tests {
         });
         let time = time.clone();
 
-        // todo: add should panic test
         let repo: EtcdLimitRepo<_, MockTime> = EtcdLimitRepo::builder()
             .client(service)
             .time(time)
@@ -250,7 +249,6 @@ mod tests {
     fn limit_repo_builder_should_panic_if_client_is_not_set() {
         let repo: EtcdLimitRepo<MockService, _> = EtcdLimitRepo::builder()
             .time(SystemTime::default())
-            .max_duration(Duration::from_secs(1000))
             .build();
     }
 
@@ -260,7 +258,6 @@ mod tests {
         let (service, _) = create_mock_service();
         let repo: EtcdLimitRepo<_, SystemTime> = EtcdLimitRepo::builder()
             .client(service)
-            .max_duration(Duration::from_secs(1000))
             .build();
     }
 }
