@@ -1,83 +1,52 @@
 use etcd_client::Error as EtcdError;
-use etcd_client::{Client, GetResponse, KvClient, PutResponse};
-use std::future::Future;
+use etcd_client::{Client, GetResponse, PutResponse};
 use tower::{service_fn, Service};
 
-use request::EtcdRequest;
+use request::{Get, Put};
 
-mod cell;
 mod limit;
 mod request;
-mod secondoboss;
 
-#[derive(Clone, Debug)]
-pub(super) enum EtcdResponse {
-    Put(PutResponse),
-    Get(GetResponse),
+#[derive(Clone)]
+struct EtcdService<G, P> {
+    get: G,
+    put: P,
 }
 
-#[cfg(test)]
-impl PartialEq for EtcdResponse {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Put(res), Self::Put(res2)) => res.0 == res2.0,
-            (Self::Get(res), Self::Get(res2)) => res.0 == res2.0,
-            _ => false,
-        }
+struct GetEtcdService;
+
+impl GetEtcdService {
+    fn new(client: Client) -> impl Service<Get, Response = GetResponse, Error = EtcdError> + Clone {
+        service_fn(move |req: Get| {
+            let mut client = client.clone();
+
+            let Get { key, options } = req;
+            async move { client.get(key, options.map(Into::into)).await }
+        })
     }
 }
 
-impl From<PutResponse> for EtcdResponse {
-    fn from(input: PutResponse) -> Self {
-        Self::Put(input)
-    }
-}
+struct PutEtcdService;
 
-impl From<GetResponse> for EtcdResponse {
-    fn from(input: GetResponse) -> Self {
-        Self::Get(input)
-    }
-}
-
-// todo: this method into of from<PutOptions> for EtcdPutOptions...
-async fn request(mut client: KvClient, req: EtcdRequest) -> Result<EtcdResponse, EtcdError> {
-    match req {
-        EtcdRequest::Put(key, value, options) => {
-            let options = options.map(Into::into);
-            client.put(key, value, options).await.map(Into::into)
-        }
-        EtcdRequest::Get(key, options) => {
-            let options = options.map(Into::into);
-            client.get(key, options).await.map(Into::into)
-        }
-    }
-}
-
-struct EtcdService;
-
-impl EtcdService {
-    fn new(
-        client: Client,
-    ) -> impl Service<EtcdRequest, Future = impl Future<Output = Result<EtcdResponse, EtcdError>>> + Clone
-    {
-        let client = client.kv_client();
-
+impl PutEtcdService {
+    fn new(client: Client) -> impl Service<Put, Response = PutResponse, Error = EtcdError> + Clone {
         service_fn(move |req| {
-            let client = client.clone();
-            request(client, req)
+            let mut client = client.clone();
+
+            let Put { key, value } = req;
+            async move { client.put(key, value, None).await }
         })
     }
 }
 
 #[cfg(all(test, feature = "container"))]
 mod tests {
-    use etcd_client::proto::{PbPutResponse, PbRangeResponse};
     use etcd_client::Client;
     use testcontainers::images::generic::GenericImage;
     use testcontainers::{clients, Container, Docker, Image};
     use tower::ServiceExt;
 
-    use super::request::{Get, Put, ToGetRequest, ToPutRequest};
+    use super::request::{Get, Put};
     use super::*;
 
     fn ok<T, E>(input: Result<T, E>) -> T {
@@ -92,42 +61,6 @@ mod tests {
     fn test_ok() {
         let res = Err("test") as Result<&'static str, &'static str>;
         ok(res);
-    }
-
-    fn get_response(res: EtcdResponse) -> GetResponse {
-        match res {
-            EtcdResponse::Get(res) => res,
-            EtcdResponse::Put(_) => unreachable!("res is not a get: {:?}", res),
-        }
-    }
-
-    #[should_panic]
-    #[test]
-    fn test_get_response() {
-        let res = EtcdResponse::Put(PutResponse(PbPutResponse {
-            header: None,
-            prev_kv: None,
-        }));
-        get_response(res);
-    }
-
-    fn put_response(res: EtcdResponse) -> PutResponse {
-        match res {
-            EtcdResponse::Put(res) => res,
-            EtcdResponse::Get(_) => unreachable!("res is not a put: {:?}", res),
-        }
-    }
-
-    #[should_panic]
-    #[test]
-    fn test_put_response() {
-        let res = EtcdResponse::Get(GetResponse(PbRangeResponse {
-            header: None,
-            kvs: vec![],
-            more: false,
-            count: 0,
-        }));
-        put_response(res);
     }
 
     fn create_etcd(cli: &clients::Cli) -> Container<clients::Cli, GenericImage> {
@@ -154,23 +87,29 @@ mod tests {
         let etcd = create_etcd(&cli);
         let client = create_client(&etcd).await;
 
-        let mut service = EtcdService::new(client.clone());
-        let service = ok(service.ready().await);
+        let mut get_service = GetEtcdService::new(client.clone());
+        let mut put_service = PutEtcdService::new(client);
 
-        // etcd is empty so count is 0
-        let res = service.call(Get::request("test")).await.unwrap();
-        assert_eq!(get_response(res).count(), 0);
-
-        // put a new kv into the store so there is no prev key
-        let res = service
-            .call(Put::request("test", "is a value"))
+        let res = (&mut get_service)
+            .oneshot(Get::request("test"))
             .await
             .unwrap();
-        assert!(put_response(res).prev_key().is_none());
+        // etcd is empty so count is 0
+        assert_eq!(res.count(), 0);
+
+        // put a new kv into the store so there is no prev key
+        let res = (&mut put_service)
+            .oneshot(Put::request("test", "is a value"))
+            .await
+            .unwrap();
+        assert!(res.prev_key().is_none());
 
         // now we get the kv so count should be one
-        let res = service.call(Get::request("test")).await.unwrap();
-        let res = get_response(res);
+        let res = (&mut get_service)
+            .oneshot(Get::request("test"))
+            .await
+            .unwrap();
+
         assert_eq!(res.count(), 1);
         let value = &res.kvs()[0];
         assert_eq!(b"test", value.key());
