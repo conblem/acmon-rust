@@ -77,10 +77,15 @@ where
 
         let time = self.time.take().expect("Time not set");
 
+        let max_lease = self.max_lease;
+        if max_lease <= Duration::from_secs(0) {
+            panic!("Lease cannot be {:?}", max_lease);
+        }
+
         EtcdLimitRepo {
             read_service,
             update_service,
-            max_lease: self.max_lease,
+            max_lease,
             time,
         }
     }
@@ -229,5 +234,18 @@ mod tests {
 
         let actual = req.await.unwrap().unwrap();
         assert_eq!(actual, 200);
+    }
+
+    #[should_panic]
+    #[test]
+    fn should_panic_on_default_lease() {
+        let (read_service, _) = create_mock_service::<_, GetResponse>();
+        let (update_service, _) = create_mock_service::<_, PutResponse>();
+
+        EtcdLimitRepoBuilder::default()
+            .read_service(read_service)
+            .update_service(update_service)
+            .time(SystemTime::default())
+            .build();
     }
 }

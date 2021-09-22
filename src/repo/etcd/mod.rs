@@ -77,6 +77,7 @@ mod tests {
             .oneshot(Get::request("test"))
             .await
             .unwrap();
+
         // etcd is empty so count is 0
         assert_eq!(res.count(), 0);
 

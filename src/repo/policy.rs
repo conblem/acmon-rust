@@ -75,12 +75,13 @@ mod tests {
 
     use super::*;
 
+    // todo: improve this test
     #[tokio::test]
     async fn test() {
         let policy = RandomAttempts::new(1);
 
         let (service, mut handle) = mock::pair();
-        let service = service.map_result(|res| res.map_err(Arc::<dyn Error + Send + Sync>::from));
+        let service = service.map_err(Arc::<dyn Error + Send + Sync>::from);
         let service = Retry::new(policy, service);
 
         let fut = service.oneshot("hallo".to_string());
