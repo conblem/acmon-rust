@@ -8,6 +8,7 @@ use request::EtcdRequest;
 mod cell;
 mod limit;
 mod request;
+mod secondoboss;
 
 #[derive(Clone, Debug)]
 pub(super) enum EtcdResponse {

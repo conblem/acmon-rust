@@ -165,7 +165,7 @@ mod tests {
     use mockall::mock;
     use std::sync::Arc;
     use std::time::{SystemTime as StdSystemTime, UNIX_EPOCH};
-    use tower::util::MapResult;
+    use tower::util::MapErr;
     use tower::ServiceExt;
     use tower_test::mock::Handle;
     use tower_test::{assert_request_eq, mock};
@@ -184,20 +184,13 @@ mod tests {
     }
 
     type Mock = mock::Mock<EtcdRequest, EtcdResponse>;
-    type MockServiceMapperInput = Result<EtcdResponse, <Mock as Service<EtcdRequest>>::Error>;
-    type MockServiceMapper =
-        fn(MockServiceMapperInput) -> Result<EtcdResponse, Arc<dyn Error + Send + Sync>>;
-    type MockService = MapResult<Mock, MockServiceMapper>;
-
-    fn mock_service_mapper(
-        input: MockServiceMapperInput,
-    ) -> Result<EtcdResponse, Arc<dyn Error + Send + Sync>> {
-        input.map_err(Arc::<dyn Error + Send + Sync>::from)
-    }
+    type MockServiceError = Arc<dyn Error + Send + Sync>;
+    type MockServiceMapper = fn(<Mock as Service<EtcdRequest>>::Error) -> MockServiceError;
+    type MockService = MapErr<Mock, MockServiceMapper>;
 
     fn create_mock_service() -> (MockService, Handle<EtcdRequest, EtcdResponse>) {
-        let (service, handle) = mock::pair::<EtcdRequest, EtcdResponse>();
-        let service = service.map_result(mock_service_mapper as MockServiceMapper);
+        let (service, handle) = mock::pair();
+        let service = service.map_err(MockServiceError::from as MockServiceMapper);
 
         (service, handle)
     }
@@ -247,7 +240,7 @@ mod tests {
     #[should_panic]
     #[test]
     fn limit_repo_builder_should_panic_if_client_is_not_set() {
-        let repo: EtcdLimitRepo<MockService, _> = EtcdLimitRepo::builder()
+        EtcdLimitRepo::<MockService, _>::builder()
             .time(SystemTime::default())
             .build();
     }
@@ -256,7 +249,7 @@ mod tests {
     #[test]
     fn limit_repo_builder_should_panic_if_time_is_not_set() {
         let (service, _) = create_mock_service();
-        let repo: EtcdLimitRepo<_, SystemTime> = EtcdLimitRepo::builder()
+        EtcdLimitRepo::<_, SystemTime>::builder()
             .client(service)
             .build();
     }
