@@ -42,10 +42,9 @@ where
 
 pub(super) trait LimitRepoBuilder {
     type Repo;
-    type Error: Error + Send + Sync + 'static;
 
     fn max_duration(&mut self, range: Duration) -> &mut Self;
-    fn build(&mut self) -> Result<Self::Repo, Self::Error>;
+    fn build(&mut self) -> Self::Repo;
 }
 
 #[derive(Debug, Error)]

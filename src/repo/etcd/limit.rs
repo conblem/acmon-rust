@@ -14,16 +14,6 @@ use super::super::time::{SystemTime, Time};
 use super::request::{EtcdRequest, GetOptions, Put, ToGetRequest, ToPutRequest};
 use super::EtcdResponse;
 
-// todo: dont think this should be failable
-#[derive(Error, Debug)]
-enum EtcdLimitRepoBuilderError {
-    #[error("Client not set")]
-    ClientNotSet,
-
-    #[error("Time not set")]
-    TimeNotSet,
-}
-
 struct EtcdLimitRepoBuilder<S, T = SystemTime> {
     service: Option<S>,
     max_lease: Duration,
@@ -58,34 +48,33 @@ where
     T: Time,
 {
     type Repo = EtcdLimitRepo<S, T>;
-    type Error = EtcdLimitRepoBuilderError;
 
     fn max_duration(&mut self, range: Duration) -> &mut Self {
         self.max_lease = range;
         self
     }
 
-    fn build(&mut self) -> Result<Self::Repo, Self::Error> {
-        let service = self
-            .service
-            .take()
-            .ok_or(EtcdLimitRepoBuilderError::ClientNotSet)?;
+    fn build(&mut self) -> Self::Repo {
+        let service = self.service.take().expect("Client not set");
 
-        let mapped_service = service
-            .clone()
-            .map_request(recalculate_time as fn((&str, &T)) -> EtcdRequest);
+        let mapped_service = service.clone().map_request(
+            (|key_and_time| {
+                let (key, time) = key_and_time;
+                let now = time.now();
+                let key = format!("limit_{}_{}", key, now.as_millis());
 
-        let time = self
-            .time
-            .take()
-            .ok_or(EtcdLimitRepoBuilderError::TimeNotSet)?;
+                Put::request(key, vec![1])
+            }) as fn((&str, &T)) -> EtcdRequest,
+        );
 
-        Ok(EtcdLimitRepo {
+        let time = self.time.take().expect("Time not set");
+
+        EtcdLimitRepo {
             max_lease: self.max_lease,
             service,
             mapped_service,
             time,
-        })
+        }
     }
 }
 
@@ -110,14 +99,6 @@ where
     service: S,
     mapped_service: MapRequest<S, fn((&str, &T)) -> EtcdRequest>,
     time: T,
-}
-
-fn recalculate_time<T: Time>(key_and_time: (&str, &T)) -> EtcdRequest {
-    let (key, time) = key_and_time;
-
-    let now = time.now();
-    let key = format!("limit_{}_{}", key, now.as_millis());
-    Put::request(key, vec![1])
 }
 
 #[async_trait]
@@ -171,10 +152,7 @@ where
     async fn add_req(&self, key: &str) -> Result<(), Self::Error> {
         let time = &self.time;
 
-        self.mapped_service
-            .clone()
-            .oneshot((key, time))
-            .await?;
+        self.mapped_service.clone().oneshot((key, time)).await?;
 
         Ok(())
     }
@@ -187,7 +165,9 @@ mod tests {
     use mockall::mock;
     use std::sync::Arc;
     use std::time::{SystemTime as StdSystemTime, UNIX_EPOCH};
+    use tower::util::MapResult;
     use tower::ServiceExt;
+    use tower_test::mock::Handle;
     use tower_test::{assert_request_eq, mock};
 
     use super::super::super::time::Time;
@@ -203,10 +183,28 @@ mod tests {
         }
     }
 
+    type Mock = mock::Mock<EtcdRequest, EtcdResponse>;
+    type MockServiceMapperInput = Result<EtcdResponse, <Mock as Service<EtcdRequest>>::Error>;
+    type MockServiceMapper =
+        fn(MockServiceMapperInput) -> Result<EtcdResponse, Arc<dyn Error + Send + Sync>>;
+    type MockService = MapResult<Mock, MockServiceMapper>;
+
+    fn mock_service_mapper(
+        input: MockServiceMapperInput,
+    ) -> Result<EtcdResponse, Arc<dyn Error + Send + Sync>> {
+        input.map_err(Arc::<dyn Error + Send + Sync>::from)
+    }
+
+    fn create_mock_service() -> (MockService, Handle<EtcdRequest, EtcdResponse>) {
+        let (service, handle) = mock::pair::<EtcdRequest, EtcdResponse>();
+        let service = service.map_result(mock_service_mapper as MockServiceMapper);
+
+        (service, handle)
+    }
+
     #[tokio::test]
     async fn test() {
-        let (service, mut handle) = mock::pair();
-        let service = service.map_result(|res| res.map_err(Arc::<dyn Error + Send + Sync>::from));
+        let (service, mut handle) = create_mock_service();
 
         let now = StdSystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let mut time = MockTime::new();
@@ -217,12 +215,12 @@ mod tests {
         });
         let time = time.clone();
 
+        // todo: add should panic test
         let repo: EtcdLimitRepo<_, MockTime> = EtcdLimitRepo::builder()
             .client(service)
             .time(time)
             .max_duration(Duration::from_secs(1000))
-            .build()
-            .expect("build failed");
+            .build();
 
         let req =
             tokio::spawn(async move { repo.get_limit("test", Duration::from_secs(500)).await });
@@ -245,5 +243,24 @@ mod tests {
 
         let actual = req.await.unwrap().unwrap();
         assert_eq!(actual, 200);
+    }
+
+    #[should_panic]
+    #[test]
+    fn limit_repo_builder_should_panic_if_client_is_not_set() {
+        let repo: EtcdLimitRepo<MockService, _> = EtcdLimitRepo::builder()
+            .time(SystemTime::default())
+            .max_duration(Duration::from_secs(1000))
+            .build();
+    }
+
+    #[should_panic]
+    #[test]
+    fn limit_repo_builder_should_panic_if_time_is_not_set() {
+        let (service, _) = create_mock_service();
+        let repo: EtcdLimitRepo<_, SystemTime> = EtcdLimitRepo::builder()
+            .client(service)
+            .max_duration(Duration::from_secs(1000))
+            .build();
     }
 }
