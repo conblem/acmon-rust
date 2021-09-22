@@ -1,5 +1,4 @@
-use etcd_client::Error as EtcdError;
-use etcd_client::{Client, GetResponse, PutResponse};
+use etcd_client::{Client, Error as EtcdError, GetResponse, PutResponse};
 use tower::{service_fn, Service};
 
 use request::{Get, Put};
@@ -41,27 +40,11 @@ impl PutEtcdService {
 
 #[cfg(all(test, feature = "container"))]
 mod tests {
-    use etcd_client::Client;
     use testcontainers::images::generic::GenericImage;
     use testcontainers::{clients, Container, Docker, Image};
     use tower::ServiceExt;
 
-    use super::request::{Get, Put};
     use super::*;
-
-    fn ok<T, E>(input: Result<T, E>) -> T {
-        match input {
-            Ok(val) => val,
-            Err(_) => unreachable!("input is not ok"),
-        }
-    }
-
-    #[should_panic]
-    #[test]
-    fn test_ok() {
-        let res = Err("test") as Result<&'static str, &'static str>;
-        ok(res);
-    }
 
     fn create_etcd(cli: &clients::Cli) -> Container<clients::Cli, GenericImage> {
         let image = GenericImage::new("quay.io/coreos/etcd:v3.5.0")
