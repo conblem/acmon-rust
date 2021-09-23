@@ -61,7 +61,7 @@ fn generate_directory(url: &str) -> Result<ApiDirectory, Error> {
     })
 }
 
-// Some type magic to get future to be static
+// Some type magic to get future to be 'static
 // even tho we pass config as a reference
 pub(super) fn run<A: AcmeServer + 'static>(
     config: &Config,
@@ -69,6 +69,7 @@ pub(super) fn run<A: AcmeServer + 'static>(
 ) -> impl Future<Output = Result<(), Error>> + 'static {
     let server = Arc::new(server);
 
+    // we pre generate the directory once to cache it for every request
     let directory = move || {
         let directory = generate_directory(&config.url)?;
         Ok(serde_json::to_vec(&directory)?)
@@ -81,12 +82,12 @@ pub(super) fn run<A: AcmeServer + 'static>(
     routes(directory, server).right_future()
 }
 
-const APPLICATION_JSON: HeaderValue = HeaderValue::from_static("application/json");
+static APPLICATION_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
 async fn routes<A: AcmeServer + 'static>(directory: Vec<u8>, server: Arc<A>) -> Result<(), Error> {
     let directory = warp::path!("acme" / "directory")
         .map(move || directory.clone())
-        .map(|directory| reply::with_header(directory, CONTENT_TYPE, APPLICATION_JSON));
+        .map(|directory| reply::with_header(directory, CONTENT_TYPE, &APPLICATION_JSON));
 
     let new_nonce = warp::path!("acme" / "new_nonce")
         .map(move || server.clone())

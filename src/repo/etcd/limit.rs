@@ -9,7 +9,7 @@ use tower::util::MapRequest;
 use tower::{Service, ServiceExt};
 use tracing::instrument;
 
-use super::super::limit::{LimitRepo, LimitRepoBuilder, ToLimitRepoBuilder};
+use super::super::limit::{LimitRepo, LimitRepoBuilder};
 use super::super::{SystemTime, Time};
 use super::{Get, Put};
 
@@ -174,6 +174,7 @@ mod tests {
     use tower_test::mock::Handle;
     use tower_test::{assert_request_eq, mock};
 
+    use super::super::super::limit::ToLimitRepoBuilder;
     use super::*;
 
     mock! {
