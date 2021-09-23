@@ -6,8 +6,10 @@ use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
 use std::sync::Arc;
+use warp::http::header::CONTENT_TYPE;
+use warp::http::HeaderValue;
 use warp::reject::Reject;
-use warp::{Filter, Rejection};
+use warp::{reply, Filter, Rejection};
 
 use super::{AcmeServer, ApiDirectory, Config};
 
@@ -79,8 +81,12 @@ pub(super) fn run<A: AcmeServer + 'static>(
     routes(directory, server).right_future()
 }
 
+const APPLICATION_JSON: HeaderValue = HeaderValue::from_static("application/json");
+
 async fn routes<A: AcmeServer + 'static>(directory: Vec<u8>, server: Arc<A>) -> Result<(), Error> {
-    let directory = warp::path!("acme" / "directory").map(move || directory.clone());
+    let directory = warp::path!("acme" / "directory")
+        .map(move || directory.clone())
+        .map(|directory| reply::with_header(directory, CONTENT_TYPE, APPLICATION_JSON));
 
     let new_nonce = warp::path!("acme" / "new_nonce")
         .map(move || server.clone())

@@ -30,7 +30,7 @@ impl<P> Serialize for Payload<P> {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Uri(hyper::Uri);
 
 impl TryFrom<String> for Uri {
@@ -103,7 +103,7 @@ impl<'de> Deserialize<'de> for Uri {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ApiDirectory {
     pub(crate) new_nonce: Uri,
@@ -115,7 +115,7 @@ pub(crate) struct ApiDirectory {
     pub(crate) meta: Option<ApiMeta>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ApiMeta {
     terms_of_service: Option<String>,
