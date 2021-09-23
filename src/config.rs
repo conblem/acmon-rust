@@ -12,7 +12,7 @@ pub struct Config {
 
 const DEFAULT_CONFIG_PATH: &str = "config.yaml";
 
-// not async so we can load Tokio runtime configuration in the future
+// not async so we can load Tokio runtime configuration
 #[instrument(err, fields(config_path))]
 pub(super) fn load_config() -> Result<Config> {
     let span = Span::current();
