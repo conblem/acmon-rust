@@ -9,6 +9,7 @@ mod direct;
 mod dto;
 mod proxy;
 
+pub(crate) use dto::ApiDirectory;
 pub(crate) use proxy::ProxyAcmeServer;
 
 #[async_trait]

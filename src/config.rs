@@ -7,6 +7,7 @@ use tracing::{debug, info, instrument, Span};
 #[derive(Deserialize, Debug)]
 pub struct Config {
     pub db: Vec<String>,
+    pub url: String,
 }
 
 const DEFAULT_CONFIG_PATH: &str = "config.yaml";

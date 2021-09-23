@@ -2,7 +2,8 @@ use anyhow::{anyhow, Result};
 use tokio::runtime::Runtime;
 use tracing::{instrument, Instrument};
 
-use server::{AcmeServer, AcmeServerBuilder, ProxyAcmeServer};
+use config::Config;
+use server::{AcmeServer, AcmeServerBuilder, ApiDirectory, ProxyAcmeServer};
 
 mod config;
 mod http;
@@ -16,12 +17,14 @@ fn main() -> Result<()> {
         Ok(()) => {}
     };
 
-    let _config = config::load_config()?;
+    let config = config::load_config()?;
     let runtime = Runtime::new()?;
 
     let block = async move {
         let acme_server = ProxyAcmeServer::builder().le_staging().build().await?;
-        acme_server.get_nonce().await?;
+
+        let http_server = http::run(&config, acme_server);
+        tokio::spawn(http_server);
 
         Ok(()) as Result<()>
     };
