@@ -10,7 +10,7 @@ use tower::{Service, ServiceExt};
 use tracing::instrument;
 
 use super::super::limit::{LimitRepo, LimitRepoBuilder, ToLimitRepoBuilder};
-use super::super::time::{SystemTime, Time};
+use super::super::{SystemTime, Time};
 use super::{Get, Put};
 
 struct EtcdLimitRepoBuilder<R, U, T = SystemTime> {

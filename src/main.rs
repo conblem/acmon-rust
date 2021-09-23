@@ -6,7 +6,6 @@ use server::{AcmeServer, AcmeServerBuilder, ProxyAcmeServer};
 
 mod config;
 mod http;
-mod limiter;
 mod repo;
 mod server;
 

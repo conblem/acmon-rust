@@ -1,6 +1,6 @@
+use etcd_client::GetOptions as EtcdGetOptions;
 use etcd_client::{Client, Error as EtcdError, GetResponse, PutResponse};
 use tower::{service_fn, Service};
-use etcd_client::GetOptions as EtcdGetOptions;
 
 mod limit;
 
