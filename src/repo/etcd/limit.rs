@@ -11,7 +11,7 @@ use tracing::instrument;
 
 use super::super::limit::{LimitRepo, LimitRepoBuilder, ToLimitRepoBuilder};
 use super::super::time::{SystemTime, Time};
-use super::request::{Get, Put};
+use super::{Get, Put};
 
 struct EtcdLimitRepoBuilder<R, U, T = SystemTime> {
     read_service: Option<R>,
