@@ -52,7 +52,7 @@ where
 {
     Ref {
         inner: &'a R,
-        phantom: PhantomPinned,
+        _phantom: PhantomPinned,
     },
     Mut {
         inner: &'a mut M,
@@ -73,14 +73,14 @@ where
 
     fn acquire(self) -> BoxFuture<'a, Result<Self::Connection, Error>> {
         match self {
-            Wrapper::Ref { inner, phantom: _ } => inner.acquire(),
+            Wrapper::Ref { inner, _phantom } => inner.acquire(),
             Wrapper::Mut { inner } => inner.acquire(),
         }
     }
 
     fn begin(self) -> BoxFuture<'a, Result<Transaction<'a, Self::Database>, Error>> {
         match self {
-            Wrapper::Ref { inner, phantom: _ } => inner.begin(),
+            Wrapper::Ref { inner, _phantom } => inner.begin(),
             Wrapper::Mut { inner } => inner.begin(),
         }
     }
@@ -93,7 +93,7 @@ where
     fn from(inner: &'a R) -> Self {
         Wrapper::Ref {
             inner,
-            phantom: PhantomPinned,
+            _phantom: PhantomPinned,
         }
     }
 }
@@ -109,9 +109,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use sqlx::{ColumnIndex, IntoArguments, PgPool, Row, Type};
     use sqlx::database::HasArguments;
     use sqlx::decode::Decode;
+    use sqlx::{ColumnIndex, IntoArguments, PgPool, Row, Type};
 
     use super::*;
 
@@ -121,30 +121,31 @@ mod tests {
         convert(&pool).await;
 
         let mut conn = pool.acquire().await.unwrap();
-        convert(&mut conn);
+        let res = convert(&mut conn).await;
+        println!("{:?}", res);
     }
 
     async fn convert<'a, DB, C, R, M, I>(input: I) -> i32
     where
+        DB: Database,
+        for<'c> <DB as HasArguments<'a>>::Arguments: IntoArguments<'c, DB>,
+        for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+        C: DerefMut<Target = DB::Connection> + Send,
         R: Unpin + 'a,
         M: Unpin + 'a,
-        DB: Database,
-        C: DerefMut<Target = DB::Connection> + Send,
         &'a R: Acquire<'a, Database = DB, Connection = C>,
         &'a mut M: Acquire<'a, Database = DB, Connection = C>,
         I: Into<Wrapper<'a, R, M>>,
         for<'c> i32: Decode<'c, DB>,
         i32: Type<DB>,
         usize: ColumnIndex<DB::Row>,
-        for<'c> <DB as HasArguments<'a>>::Arguments: IntoArguments<'c, DB>,
-        for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>
     {
         let wrapper = input.into();
         let mut conn = wrapper.acquire().await.unwrap();
 
         sqlx::query("select 1 + 1")
             .try_map(|row: DB::Row| row.try_get::<i32, _>(0))
-            .fetch_one(conn.deref_mut())
+            .fetch_one(&mut *conn)
             .await
             .unwrap()
     }
