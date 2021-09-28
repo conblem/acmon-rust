@@ -1,50 +1,124 @@
+use either::Either;
 use futures_util::future::BoxFuture;
-use sqlx::{Acquire, Database, Error, Executor, Transaction};
+use futures_util::stream::BoxStream;
+use sqlx::database::HasStatement;
+use sqlx::{Acquire, Database, Describe, Error, Execute, Executor, Transaction};
 use std::convert::Infallible;
+use std::fmt::Debug;
 use std::marker::{PhantomData, PhantomPinned};
 use std::ops::DerefMut;
 
-struct Never<DB, C> {
+#[derive(Debug)]
+struct Never<DB> {
     inner: Infallible,
-    phantom: PhantomData<(DB, C)>,
+    phantom: PhantomData<DB>,
 }
 
-impl<DB, C> Unpin for Never<DB, C> {}
+impl<DB> Unpin for Never<DB> {}
 
-impl<'a, DB, C> Acquire<'a> for &'_ Never<DB, C>
+impl<'c, DB> Executor<'c> for &'_ Never<DB>
 where
-    DB: Database,
-    C: DerefMut<Target = DB::Connection> + Send,
+    DB: Database + Sync,
 {
     type Database = DB;
-    type Connection = C;
 
-    fn acquire(self) -> BoxFuture<'a, Result<Self::Connection, Error>> {
+    fn fetch_many<'e, 'q: 'e, E: 'q>(
+        self,
+        _query: E,
+    ) -> BoxStream<'e, Result<Either<DB::QueryResult, DB::Row>, Error>>
+    where
+        'c: 'e,
+        E: Execute<'q, Self::Database>,
+    {
         match self.inner {}
     }
 
-    fn begin(self) -> BoxFuture<'a, Result<Transaction<'a, Self::Database>, Error>> {
+    fn fetch_optional<'e, 'q: 'e, E: 'q>(
+        self,
+        _query: E,
+    ) -> BoxFuture<'e, Result<Option<DB::Row>, Error>>
+    where
+        'c: 'e,
+        E: Execute<'q, Self::Database>,
+    {
+        match self.inner {}
+    }
+
+    fn prepare_with<'e, 'q: 'e>(
+        self,
+        _sql: &'q str,
+        _parameters: &'e [<Self::Database as Database>::TypeInfo],
+    ) -> BoxFuture<'e, Result<<Self::Database as HasStatement<'q>>::Statement, Error>>
+    where
+        'c: 'e,
+    {
+        match self.inner {}
+    }
+
+    #[doc(hidden)]
+    fn describe<'e, 'q: 'e>(
+        self,
+        _sql: &'q str,
+    ) -> BoxFuture<'e, Result<Describe<Self::Database>, Error>>
+    where
+        'c: 'e,
+    {
         match self.inner {}
     }
 }
 
-impl<'a, DB, C> Acquire<'a> for &'_ mut Never<DB, C>
+impl<'c, DB> Executor<'c> for &'_ mut Never<DB>
 where
-    DB: Database,
-    C: DerefMut<Target = DB::Connection> + Send,
+    DB: Database + Sync,
 {
     type Database = DB;
-    type Connection = C;
 
-    fn acquire(self) -> BoxFuture<'a, Result<Self::Connection, Error>> {
+    fn fetch_many<'e, 'q: 'e, E: 'q>(
+        self,
+        _query: E,
+    ) -> BoxStream<'e, Result<Either<DB::QueryResult, DB::Row>, Error>>
+    where
+        'c: 'e,
+        E: Execute<'q, Self::Database>,
+    {
         match self.inner {}
     }
 
-    fn begin(self) -> BoxFuture<'a, Result<Transaction<'a, Self::Database>, Error>> {
+    fn fetch_optional<'e, 'q: 'e, E: 'q>(
+        self,
+        _query: E,
+    ) -> BoxFuture<'e, Result<Option<DB::Row>, Error>>
+    where
+        'c: 'e,
+        E: Execute<'q, Self::Database>,
+    {
+        match self.inner {}
+    }
+
+    fn prepare_with<'e, 'q: 'e>(
+        self,
+        _sql: &'q str,
+        _parameters: &'e [<Self::Database as Database>::TypeInfo],
+    ) -> BoxFuture<'e, Result<<Self::Database as HasStatement<'q>>::Statement, Error>>
+    where
+        'c: 'e,
+    {
+        match self.inner {}
+    }
+
+    #[doc(hidden)]
+    fn describe<'e, 'q: 'e>(
+        self,
+        _sql: &'q str,
+    ) -> BoxFuture<'e, Result<Describe<Self::Database>, Error>>
+    where
+        'c: 'e,
+    {
         match self.inner {}
     }
 }
 
+#[derive(Debug)]
 enum Wrapper<'a, R, M>
 where
     R: Unpin,
@@ -59,36 +133,76 @@ where
     },
 }
 
-impl<'a, DB, C, R, M> Acquire<'a> for Wrapper<'a, R, M>
+impl<'c, DB, R, M> Executor<'c> for &'c mut Wrapper<'c, R, M>
 where
-    DB: Database,
-    C: DerefMut<Target = DB::Connection> + Send,
-    R: Unpin,
-    M: Unpin,
-    &'a R: Acquire<'a, Database = DB, Connection = C>,
-    &'a mut M: Acquire<'a, Database = DB, Connection = C>,
+    DB: Database + Sync,
+    R: Unpin + Debug,
+    M: Unpin + Debug,
+    &'c R: Executor<'c, Database = DB>,
+    &'c mut M: Executor<'c, Database = DB>,
 {
     type Database = DB;
-    type Connection = C;
 
-    fn acquire(self) -> BoxFuture<'a, Result<Self::Connection, Error>> {
+    fn fetch_many<'e, 'q: 'e, E: 'q>(
+        self,
+        query: E,
+    ) -> BoxStream<'e, Result<Either<DB::QueryResult, DB::Row>, Error>>
+    where
+        'c: 'e,
+        E: Execute<'q, Self::Database>,
+    {
         match self {
-            Wrapper::Ref { inner, _phantom } => inner.acquire(),
-            Wrapper::Mut { inner } => inner.acquire(),
+            Wrapper::Ref { inner, _phantom } => inner.fetch_many(query),
+            Wrapper::Mut { inner } => inner.fetch_many(query),
         }
     }
 
-    fn begin(self) -> BoxFuture<'a, Result<Transaction<'a, Self::Database>, Error>> {
+    fn fetch_optional<'e, 'q: 'e, E: 'q>(
+        self,
+        query: E,
+    ) -> BoxFuture<'e, Result<Option<DB::Row>, Error>>
+    where
+        'c: 'e,
+        E: Execute<'q, Self::Database>,
+    {
         match self {
-            Wrapper::Ref { inner, _phantom } => inner.begin(),
-            Wrapper::Mut { inner } => inner.begin(),
+            Wrapper::Ref { inner, _phantom } => inner.fetch_optional(query),
+            Wrapper::Mut { inner } => inner.fetch_optional(query),
+        }
+    }
+
+    fn prepare_with<'e, 'q: 'e>(
+        self,
+        sql: &'q str,
+        parameters: &'e [<Self::Database as Database>::TypeInfo],
+    ) -> BoxFuture<'e, Result<<Self::Database as HasStatement<'q>>::Statement, Error>>
+    where
+        'c: 'e,
+    {
+        match self {
+            Wrapper::Ref { inner, _phantom } => inner.prepare_with(sql, parameters),
+            Wrapper::Mut { inner } => inner.prepare_with(sql, parameters),
+        }
+    }
+
+    #[doc(hidden)]
+    fn describe<'e, 'q: 'e>(
+        self,
+        sql: &'q str,
+    ) -> BoxFuture<'e, Result<Describe<Self::Database>, Error>>
+    where
+        'c: 'e,
+    {
+        match self {
+            Wrapper::Ref { inner, _phantom } => inner.describe(sql),
+            Wrapper::Mut { inner } => inner.describe(sql),
         }
     }
 }
 
-impl<'a, DB, C, R: Unpin> From<&'a R> for Wrapper<'a, R, Never<DB, C>>
+impl<'a, DB, R: Unpin> From<&'a R> for Wrapper<'a, R, Never<DB>>
 where
-    &'a R: Acquire<'a, Database = DB, Connection = C>,
+    &'a R: Executor<'a, Database = DB>,
 {
     fn from(inner: &'a R) -> Self {
         Wrapper::Ref {
@@ -98,9 +212,9 @@ where
     }
 }
 
-impl<'a, DB, C, M: Unpin> From<&'a mut M> for Wrapper<'a, Never<DB, C>, M>
+impl<'a, DB, M: Unpin> From<&'a mut M> for Wrapper<'a, Never<DB>, M>
 where
-    &'a mut M: Acquire<'a, Database = DB, Connection = C>,
+    &'a mut M: Executor<'a, Database = DB>,
 {
     fn from(inner: &'a mut M) -> Self {
         Wrapper::Mut { inner }
@@ -120,33 +234,29 @@ mod tests {
         let pool = PgPool::connect("hallo").await.unwrap();
         convert(&pool).await;
 
-        let mut conn = pool.acquire().await.unwrap();
-        let res = convert(&mut conn).await;
-        println!("{:?}", res);
+        //let mut conn = pool.acquire().await.unwrap();
+        //let res = convert(&mut conn).await;
+        //println!("{:?}", res);
     }
 
-    async fn convert<'a, DB, C, R, M, I>(input: I) -> i32
+    async fn convert<'a, DB, R, M, I>(input: I) -> i32
     where
         DB: Database,
-        for<'c> <DB as HasArguments<'a>>::Arguments: IntoArguments<'c, DB>,
-        for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
-        C: DerefMut<Target = DB::Connection> + Send,
         R: Unpin + 'a,
         M: Unpin + 'a,
-        &'a R: Acquire<'a, Database = DB, Connection = C>,
-        &'a mut M: Acquire<'a, Database = DB, Connection = C>,
+        &'a R: Executor<'a, Database = DB>,
+        &'a mut M: Executor<'a, Database = DB>,
         I: Into<Wrapper<'a, R, M>>,
-        for<'c> i32: Decode<'c, DB>,
-        i32: Type<DB>,
-        usize: ColumnIndex<DB::Row>,
     {
         let wrapper = input.into();
-        let mut conn = wrapper.acquire().await.unwrap();
+        //let mut conn = wrapper.acquire().await.unwrap();
 
-        sqlx::query("select 1 + 1")
+        /*sqlx::query("select 1 + 1")
             .try_map(|row: DB::Row| row.try_get::<i32, _>(0))
             .fetch_one(&mut *conn)
             .await
-            .unwrap()
+            .unwrap()*/
+
+        0
     }
 }
