@@ -2,19 +2,16 @@ use either::Either;
 use futures_util::future::BoxFuture;
 use futures_util::stream::BoxStream;
 use sqlx::database::HasStatement;
-use sqlx::{Acquire, Database, Describe, Error, Execute, Executor, Transaction};
+use sqlx::{Acquire, Database, Describe, Error, Execute, Executor};
 use std::convert::Infallible;
 use std::fmt::Debug;
-use std::marker::{PhantomData, PhantomPinned};
-use std::ops::DerefMut;
+use std::marker::PhantomData;
 
 #[derive(Debug)]
 struct Never<DB> {
     inner: Infallible,
     phantom: PhantomData<DB>,
 }
-
-impl<DB> Unpin for Never<DB> {}
 
 impl<'c, DB> Executor<'c> for &'_ Never<DB>
 where
@@ -119,25 +116,16 @@ where
 }
 
 #[derive(Debug)]
-enum Wrapper<'a, R, M>
-where
-    R: Unpin,
-    M: Unpin,
-{
-    Ref {
-        inner: &'a R,
-        _phantom: PhantomPinned,
-    },
-    Mut {
-        inner: &'a mut M,
-    },
+enum Wrapper<'a, R, M> {
+    Ref { inner: &'a R },
+    Mut { inner: &'a mut M },
 }
 
-impl<'c, DB, R, M> Executor<'c> for &'c mut Wrapper<'c, R, M>
+impl<'c, DB, R, M> Executor<'c> for Wrapper<'c, R, M>
 where
     DB: Database + Sync,
-    R: Unpin + Debug,
-    M: Unpin + Debug,
+    R: Debug,
+    M: Debug,
     &'c R: Executor<'c, Database = DB>,
     &'c mut M: Executor<'c, Database = DB>,
 {
@@ -152,7 +140,7 @@ where
         E: Execute<'q, Self::Database>,
     {
         match self {
-            Wrapper::Ref { inner, _phantom } => inner.fetch_many(query),
+            Wrapper::Ref { inner } => inner.fetch_many(query),
             Wrapper::Mut { inner } => inner.fetch_many(query),
         }
     }
@@ -166,7 +154,7 @@ where
         E: Execute<'q, Self::Database>,
     {
         match self {
-            Wrapper::Ref { inner, _phantom } => inner.fetch_optional(query),
+            Wrapper::Ref { inner } => inner.fetch_optional(query),
             Wrapper::Mut { inner } => inner.fetch_optional(query),
         }
     }
@@ -180,7 +168,7 @@ where
         'c: 'e,
     {
         match self {
-            Wrapper::Ref { inner, _phantom } => inner.prepare_with(sql, parameters),
+            Wrapper::Ref { inner } => inner.prepare_with(sql, parameters),
             Wrapper::Mut { inner } => inner.prepare_with(sql, parameters),
         }
     }
@@ -194,7 +182,7 @@ where
         'c: 'e,
     {
         match self {
-            Wrapper::Ref { inner, _phantom } => inner.describe(sql),
+            Wrapper::Ref { inner } => inner.describe(sql),
             Wrapper::Mut { inner } => inner.describe(sql),
         }
     }
@@ -205,10 +193,7 @@ where
     &'a R: Executor<'a, Database = DB>,
 {
     fn from(inner: &'a R) -> Self {
-        Wrapper::Ref {
-            inner,
-            _phantom: PhantomPinned,
-        }
+        Wrapper::Ref { inner }
     }
 }
 
@@ -218,6 +203,15 @@ where
 {
     fn from(inner: &'a mut M) -> Self {
         Wrapper::Mut { inner }
+    }
+}
+
+impl <'a, 'b, R, M> From<&'b mut Wrapper<'a, R, M>> for Wrapper<'b, R, M> {
+    fn from(input: &'b mut Wrapper<'a, R, M>) -> Self {
+        match input {
+            Wrapper::Ref { inner } => Wrapper::Ref { inner },
+            Wrapper::Mut { inner } => Wrapper::Mut { inner }
+        }
     }
 }
 
@@ -233,30 +227,44 @@ mod tests {
     async fn test() {
         let pool = PgPool::connect("hallo").await.unwrap();
         convert(&pool).await;
+        convert(&pool).await;
 
-        //let mut conn = pool.acquire().await.unwrap();
-        //let res = convert(&mut conn).await;
-        //println!("{:?}", res);
+        let mut conn = pool.acquire().await.unwrap();
+        convert(&mut conn).await;
+        convert(&mut conn).await;
+
+        let mut trans = conn.begin().await.unwrap();
+        convert(&mut trans).await;
+        convert(&mut trans).await;
     }
 
     async fn convert<'a, DB, R, M, I>(input: I) -> i32
     where
-        DB: Database,
-        R: Unpin + 'a,
-        M: Unpin + 'a,
-        &'a R: Executor<'a, Database = DB>,
-        &'a mut M: Executor<'a, Database = DB>,
+        DB: Database + Sync,
+        for<'b> <DB as HasArguments<'a>>::Arguments: IntoArguments<'b, DB>,
+        R: Debug + 'a,
+        M: Debug + 'a,
+        for<'b> &'b R: Executor<'b, Database = DB>,
+        for<'b> &'b mut M: Executor<'b, Database = DB>,
         I: Into<Wrapper<'a, R, M>>,
+        for<'b> i32: Decode<'b, DB>,
+        i32: Type<DB>,
+        usize: ColumnIndex<DB::Row>,
     {
-        let wrapper = input.into();
-        //let mut conn = wrapper.acquire().await.unwrap();
+        let mut wrapper = input.into();
 
-        /*sqlx::query("select 1 + 1")
+        let res = sqlx::query("select 1 + 1")
             .try_map(|row: DB::Row| row.try_get::<i32, _>(0))
-            .fetch_one(&mut *conn)
+            .fetch_one(Wrapper::<'_, R, M>::from(&mut wrapper))
             .await
-            .unwrap()*/
+            .unwrap();
 
-        0
+        let res_two = sqlx::query("select 2 + 2")
+            .try_map(|row: DB::Row| row.try_get::<i32, _>(0))
+            .fetch_one(Wrapper::<'_, R, M>::from(&mut wrapper))
+            .await
+            .unwrap();
+
+        res + res_two
     }
 }
