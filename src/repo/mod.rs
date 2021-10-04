@@ -2,6 +2,7 @@ mod account;
 mod etcd;
 mod limit;
 mod policy;
+mod sqlx;
 
 use std::time::{Duration, UNIX_EPOCH};
 
