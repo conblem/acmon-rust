@@ -1,102 +1,91 @@
 use core::convert::Infallible;
-use sqlx::{Executor, Postgres};
+use sqlx::{Executor, Postgres, Database};
 
-struct NeverRef {
-    inner: Infallible,
-}
+enum NeverRef {}
 
-struct NeverMut {
-    inner: Infallible,
-}
+enum NeverMut {}
 
-enum Wrapper<'a, R, M> {
+enum Wrapper<'a, R, M, N> {
     Ref { inner: &'a R },
     Mut { inner: &'a mut M },
+    _Phantom { inner: N }
 }
 
-impl<'a, 'b, R, M> Wrapper<'a, R, M>
-where
-    R: 'b,
-    M: 'b,
-    Wrapper<'b, R, M>: IntoInner<'b>,
-{
-    fn get_mut(&'b mut self) -> <Wrapper<'b, R, M> as IntoInner>::Target {
-        let wrapper: Wrapper<'b, R, M> = match self {
-            Wrapper::Ref { inner } => Wrapper::Ref { inner },
-            Wrapper::Mut { inner } => Wrapper::Mut { inner },
-        };
-        wrapper.inner()
-    }
-}
-
-impl<'a, R> From<&'a R> for Wrapper<'a, R, NeverMut> {
+impl<'a, R> From<&'a R> for Wrapper<'a, R, Infallible, NeverRef> {
     fn from(inner: &'a R) -> Self {
         Wrapper::Ref { inner }
     }
 }
 
-impl<'a, M> From<&'a mut M> for Wrapper<'a, NeverRef, M> {
+impl<'a, M> From<&'a mut M> for Wrapper<'a, Infallible, M, NeverMut> {
     fn from(inner: &'a mut M) -> Self {
         Wrapper::Mut { inner }
     }
 }
 
-trait IntoInner<'a> {
-    type Target: Executor<'a, Database = Postgres>;
-    fn inner(self) -> Self::Target;
+trait IntoInner {
+    type Inner;
+    fn inner(self) -> Self::Inner;
 }
 
-impl<'a, R> IntoInner<'a> for Wrapper<'a, R, NeverMut>
-where
-    &'a R: Executor<'a, Database = Postgres>,
+impl<'a, R: Unpin> IntoInner for Wrapper<'a, R, Infallible, NeverRef>
 {
-    type Target = &'a R;
+    type Inner = &'a R;
 
     fn inner(self) -> &'a R {
         match self {
             Wrapper::Ref { inner } => inner,
-            Wrapper::Mut { inner } => match inner.inner {},
+            Wrapper::Mut { inner } => match *inner {},
+            Wrapper::_Phantom { inner} => match inner {}
         }
     }
 }
 
-impl<'a, M> IntoInner<'a> for Wrapper<'a, NeverRef, M>
-where
-    &'a mut M: Executor<'a, Database = Postgres>,
+impl<'a, M: Unpin> IntoInner for Wrapper<'a, Infallible, M, NeverMut>
 {
-    type Target = &'a mut M;
+    type Inner = &'a mut M;
 
     fn inner(self) -> &'a mut M {
         match self {
-            Wrapper::Ref { inner } => match inner.inner {},
+            Wrapper::Ref { inner } => match *inner {},
             Wrapper::Mut { inner } => inner,
+            Wrapper::_Phantom { inner} => match inner {}
         }
     }
 }
 
-#[cfg(all(test, feature = "container"))]
-mod tests {
-    use sqlx::postgres::PgRow;
-    use sqlx::{PgPool, Postgres, Row};
-    use testcontainers::{clients, images, Docker};
+trait Bound<'a>: IntoInner<Inner = Self::Target> {
+    type Target: Executor<'a, Database = Postgres>;
+}
 
+impl <'a, R> Bound<'a> for Wrapper<'a, R, Infallible, NeverRef> where &'a R: Executor<'a, Database = Postgres> {
+    type Target = &'a R;
+}
+
+impl <'a, M> Bound<'a> for Wrapper<'a, Infallible, M, NeverMut> where &'a mut M: Executor<'a, Database = Postgres> {
+    type Target = &'a mut M;
+}
+
+#[cfg(test)]
+mod tests {
     use super::*;
+    use sqlx::PgPool;
 
     #[tokio::test]
     async fn test() {
-        let docker = clients::Cli::default();
-        let postgres_image = images::postgres::Postgres::default();
-        let node = docker.run(postgres_image);
-
-        let port = node.get_host_port(5432).unwrap();
-        let connection_string = format!("postgres://postgres:postgres@localhost:{}/postgres", port);
-
-        let pool = PgPool::connect(&connection_string).await.unwrap();
-
-        execute(&pool).await;
+        let pool = PgPool::connect("").await.unwrap();
+        let wrapper: Wrapper<'_, _, _, _> = (&pool).into();
+        execute(wrapper).await;
     }
 
-    async fn execute<'a, R, M, I>(executor: I)
+    async fn execute<'a, R, M, N>(wrapper: Wrapper<'a, R, M, N>)
+    where
+        Wrapper<'a, R, M, N>: Bound<'a>,
+        //for<'b> O: Executor<'b, Database = Postgres>,
+    {
+    }
+
+    /*fn execute<'a, R, M, I>(executor: I)
     where
         R: 'a,
         M: 'a,
@@ -104,19 +93,5 @@ mod tests {
         for<'b> Wrapper<'b, R, M>: IntoInner<'b>,
     {
         let mut wrapper = executor.into();
-
-        let res = sqlx::query("select 1 + 1")
-            .try_map(|row: PgRow| row.try_get::<i32, _>(0))
-            .fetch_one(wrapper.get_mut())
-            .await
-            .unwrap();
-        assert_eq!(2, res);
-
-        let res = sqlx::query("select 2 + 2")
-            .try_map(|row: PgRow| row.try_get::<i32, _>(0))
-            .fetch_one(wrapper.get_mut())
-            .await
-            .unwrap();
-        assert_eq!(4, res);
-    }
+    }*/
 }
