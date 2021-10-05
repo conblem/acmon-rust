@@ -20,26 +20,26 @@ impl<'a, M> From<&'a mut M> for Wrapper<&'a mut M> {
     }
 }
 
-trait IntoInner<'b> {
+trait IntoInner<'b, T> where Self: From<T> {
     type Inner;
     fn inner(&'b mut self) -> Self::Inner;
 }
 
-impl<'a, 'b, R: 'b> IntoInner<'b> for Wrapper<&'a R> {
+impl<'a, 'b, R: 'b> IntoInner<'b, &'a R> for Wrapper<&'a R> {
     type Inner = &'b R;
     fn inner(&'b mut self) -> &'b R {
         self.inner
     }
 }
 
-impl<'a, 'b, M: 'b> IntoInner<'b> for Wrapper<&'a mut M> {
+impl<'a, 'b, M: 'b> IntoInner<'b, &'a mut M> for Wrapper<&'a mut M> {
     type Inner = &'b mut M;
     fn inner(&'b mut self) -> &'b mut M {
         self.inner
     }
 }
 
-trait ExecutorBound<'b, T>: IntoInner<'b, Inner = Self::Bound> where Self: From<T> {
+trait ExecutorBound<'b, T>: IntoInner<'b, T, Inner = Self::Bound>  {
     type Bound: Executor<'b, Database = Postgres>;
 }
 
