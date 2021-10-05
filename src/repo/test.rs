@@ -1,27 +1,21 @@
-use core::convert::Infallible;
-use sqlx::{Database, Executor, Postgres};
-use std::marker::PhantomData;
-use std::ops::DerefMut;
+use sqlx::{Executor, Postgres};
 
-struct Wrapper<'a, T> {
+struct Wrapper<T> {
     inner: T,
-    _phantom: PhantomData<&'a ()>,
 }
 
-impl<'a, R> From<&'a R> for Wrapper<'a, &'a R> {
+impl<'a, R> From<&'a R> for Wrapper<&'a R> {
     fn from(inner: &'a R) -> Self {
         Wrapper {
             inner,
-            _phantom: PhantomData,
         }
     }
 }
 
-impl<'a, M> From<&'a mut M> for Wrapper<'a, &'a mut M> {
+impl<'a, M> From<&'a mut M> for Wrapper<&'a mut M> {
     fn from(inner: &'a mut M) -> Self {
         Wrapper {
             inner,
-            _phantom: PhantomData,
         }
     }
 }
@@ -31,32 +25,32 @@ trait IntoInner<'b> {
     fn inner(&'b mut self) -> Self::Inner;
 }
 
-impl<'a, 'b, R: 'b> IntoInner<'b> for Wrapper<'a, &'a R> {
+impl<'a, 'b, R: 'b> IntoInner<'b> for Wrapper<&'a R> {
     type Inner = &'b R;
     fn inner(&'b mut self) -> &'b R {
         self.inner
     }
 }
 
-impl<'a, 'b, M: 'b> IntoInner<'b> for Wrapper<'a, &'a mut M> {
+impl<'a, 'b, M: 'b> IntoInner<'b> for Wrapper<&'a mut M> {
     type Inner = &'b mut M;
     fn inner(&'b mut self) -> &'b mut M {
         self.inner
     }
 }
 
-trait ExecutorBound<'b>: IntoInner<'b, Inner = Self::Bound> {
+trait ExecutorBound<'b, T>: IntoInner<'b, Inner = Self::Bound> where Self: From<T> {
     type Bound: Executor<'b, Database = Postgres>;
 }
 
-impl<'a, 'b, R: 'b> ExecutorBound<'b> for Wrapper<'a, &'a R>
+impl<'a, 'b, R: 'b> ExecutorBound<'b, &'a R> for Wrapper<&'a R>
 where
     &'b R: Executor<'b, Database = Postgres>,
 {
     type Bound = &'b R;
 }
 
-impl<'a, 'b, M: 'b> ExecutorBound<'b> for Wrapper<'a, &'a mut M>
+impl<'a, 'b, M: 'b> ExecutorBound<'b, &'a mut M> for Wrapper<&'a mut M>
 where
     &'b mut M: Executor<'b, Database = Postgres>,
 {
@@ -87,12 +81,11 @@ mod tests {
         execute(&mut conn).await;
     }
 
-    async fn execute<'a, I, T>(executor: I)
+    async fn execute<T>(executor: T)
     where
-        I: Into<Wrapper<'a, T>>,
-        for<'b> Wrapper<'a, T>: ExecutorBound<'b>,
+        for<'b> Wrapper<T>: ExecutorBound<'b, T>,
     {
-        let mut wrapper: Wrapper<'a, T> = executor.into();
+        let mut wrapper: Wrapper<T> = executor.into();
 
         let res = sqlx::query("select 1 + 1")
             .try_map(|row: PgRow| row.try_get::<i32, _>(0))
