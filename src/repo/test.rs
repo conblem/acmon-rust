@@ -45,22 +45,22 @@ impl<'a, 'b, M: 'b> IntoInner<'b> for Wrapper<'a, &'a mut M> {
     }
 }
 
-trait Bound<'b>: IntoInner<'b, Inner = Self::Target> {
-    type Target: Executor<'b, Database = Postgres>;
+trait ExecutorBound<'b>: IntoInner<'b, Inner = Self::Bound> {
+    type Bound: Executor<'b, Database = Postgres>;
 }
 
-impl<'a, 'b, R: 'b> Bound<'b> for Wrapper<'a, &'a R>
+impl<'a, 'b, R: 'b> ExecutorBound<'b> for Wrapper<'a, &'a R>
 where
     &'b R: Executor<'b, Database = Postgres>,
 {
-    type Target = &'b R;
+    type Bound = &'b R;
 }
 
-impl<'a, 'b, M: 'b> Bound<'b> for Wrapper<'a, &'a mut M>
+impl<'a, 'b, M: 'b> ExecutorBound<'b> for Wrapper<'a, &'a mut M>
 where
     &'b mut M: Executor<'b, Database = Postgres>,
 {
-    type Target = &'b mut M;
+    type Bound = &'b mut M;
 }
 
 #[cfg(all(test, feature = "container"))]
@@ -90,9 +90,9 @@ mod tests {
     async fn execute<'a, I, T>(executor: I)
     where
         I: Into<Wrapper<'a, T>>,
-        for<'b> Wrapper<'a, T>: Bound<'b>,
+        for<'b> Wrapper<'a, T>: ExecutorBound<'b>,
     {
-        let mut wrapper = executor.into();
+        let mut wrapper: Wrapper<'a, T> = executor.into();
 
         let res = sqlx::query("select 1 + 1")
             .try_map(|row: PgRow| row.try_get::<i32, _>(0))
