@@ -1,86 +1,66 @@
 use core::convert::Infallible;
 use sqlx::{Database, Executor, Postgres};
+use std::marker::PhantomData;
+use std::ops::DerefMut;
 
-enum NeverRef {}
-enum NeverMut {}
-
-enum Wrapper<'a, R, M, N> {
-    Ref { inner: &'a R },
-    Mut { inner: &'a mut M },
-    Phantom { inner: &'a mut N },
+struct Wrapper<'a, T> {
+    inner: T,
+    _phantom: PhantomData<&'a ()>,
 }
 
-impl<'a, 'b, R: 'a, M: 'a, N: 'a> Wrapper<'a, R, M, N>
-where
-    Wrapper<'b, R, M, N>: IntoInner,
-{
-    fn get_mut(&'b mut self) -> <Wrapper<'b, R, M, N> as IntoInner>::Inner {
-        let wrapper: Wrapper<'b, R, M, N> = match self {
-            Wrapper::Ref { inner } => Wrapper::Ref { inner },
-            Wrapper::Mut { inner } => Wrapper::Mut { inner },
-            Wrapper::Phantom { inner } => Wrapper::Phantom { inner },
-        };
-        wrapper.inner()
-    }
-}
-
-impl<'a, R> From<&'a R> for Wrapper<'a, R, Infallible, NeverRef> {
+impl<'a, R> From<&'a R> for Wrapper<'a, &'a R> {
     fn from(inner: &'a R) -> Self {
-        Wrapper::Ref { inner }
+        Wrapper {
+            inner,
+            _phantom: PhantomData,
+        }
     }
 }
 
-impl<'a, M> From<&'a mut M> for Wrapper<'a, Infallible, M, NeverMut> {
+impl<'a, M> From<&'a mut M> for Wrapper<'a, &'a mut M> {
     fn from(inner: &'a mut M) -> Self {
-        Wrapper::Mut { inner }
+        Wrapper {
+            inner,
+            _phantom: PhantomData,
+        }
     }
 }
 
-trait IntoInner {
+trait IntoInner<'b> {
     type Inner;
-    fn inner(self) -> Self::Inner;
+    fn inner(&'b mut self) -> Self::Inner;
 }
 
-impl<'a, R> IntoInner for Wrapper<'a, R, Infallible, NeverRef> {
-    type Inner = &'a R;
-
-    fn inner(self) -> &'a R {
-        match self {
-            Wrapper::Ref { inner } => inner,
-            Wrapper::Mut { inner } => match *inner {},
-            Wrapper::Phantom { inner } => match *inner {},
-        }
+impl<'a, 'b, R: 'b> IntoInner<'b> for Wrapper<'a, &'a R> {
+    type Inner = &'b R;
+    fn inner(&'b mut self) -> &'b R {
+        self.inner
     }
 }
 
-impl<'a, M> IntoInner for Wrapper<'a, Infallible, M, NeverMut> {
-    type Inner = &'a mut M;
-
-    fn inner(self) -> &'a mut M {
-        match self {
-            Wrapper::Ref { inner } => match *inner {},
-            Wrapper::Mut { inner } => inner,
-            Wrapper::Phantom { inner } => match *inner {},
-        }
+impl<'a, 'b, M: 'b> IntoInner<'b> for Wrapper<'a, &'a mut M> {
+    type Inner = &'b mut M;
+    fn inner(&'b mut self) -> &'b mut M {
+        self.inner
     }
 }
 
-trait Bound<'a>: IntoInner<Inner = Self::Target> {
-    type Target: Executor<'a, Database = Postgres>;
+trait Bound<'b>: IntoInner<'b, Inner = Self::Target> {
+    type Target: Executor<'b, Database = Postgres>;
 }
 
-impl<'a, R> Bound<'a> for Wrapper<'a, R, Infallible, NeverRef>
+impl<'a, 'b, R: 'b> Bound<'b> for Wrapper<'a, &'a R>
 where
-    &'a R: Executor<'a, Database = Postgres>,
+    &'b R: Executor<'b, Database = Postgres>,
 {
-    type Target = &'a R;
+    type Target = &'b R;
 }
 
-impl<'a, M> Bound<'a> for Wrapper<'a, Infallible, M, NeverMut>
+impl<'a, 'b, M: 'b> Bound<'b> for Wrapper<'a, &'a mut M>
 where
-    &'a mut M: Executor<'a, Database = Postgres>,
+    &'b mut M: Executor<'b, Database = Postgres>,
 {
-    type Target = &'a mut M;
+    type Target = &'b mut M;
 }
 
 #[cfg(all(test, feature = "container"))]
@@ -101,27 +81,29 @@ mod tests {
         let connection_string = format!("postgres://postgres:postgres@localhost:{}/postgres", port);
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
-
         execute(&pool).await;
+
+        let mut conn = pool.acquire().await.unwrap();
+        execute(&mut conn).await;
     }
 
-    async fn execute<'a, R: 'a, M: 'a, N: 'a, I>(executor: I)
+    async fn execute<'a, I, T>(executor: I)
     where
-        I: Into<Wrapper<'a, R, M, N>>,
-        for<'b> Wrapper<'b, R, M, N>: Bound<'b>,
+        I: Into<Wrapper<'a, T>>,
+        for<'b> Wrapper<'a, T>: Bound<'b>,
     {
         let mut wrapper = executor.into();
 
         let res = sqlx::query("select 1 + 1")
             .try_map(|row: PgRow| row.try_get::<i32, _>(0))
-            .fetch_one(wrapper.get_mut())
+            .fetch_one(wrapper.inner())
             .await
             .unwrap();
         assert_eq!(2, res);
 
         let res = sqlx::query("select 2 + 2")
             .try_map(|row: PgRow| row.try_get::<i32, _>(0))
-            .fetch_one(wrapper.get_mut())
+            .fetch_one(wrapper.inner())
             .await
             .unwrap();
         assert_eq!(4, res);
