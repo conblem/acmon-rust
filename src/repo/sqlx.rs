@@ -118,7 +118,7 @@ where
 }
 
 #[derive(Debug)]
-enum Wrapper<'a, R, M> {
+pub(super) enum Wrapper<'a, R, M> {
     Ref { inner: &'a R },
     Mut { inner: &'a mut M },
 }
