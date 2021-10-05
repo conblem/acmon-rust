@@ -233,7 +233,7 @@ mod tests {
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
 
-        execute(&pool);
+        execute(&pool).await;
     }
 
     async fn execute<'a, R, M, I>(input: I)
