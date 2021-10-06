@@ -1,25 +1,15 @@
 use async_trait::async_trait;
 
 use super::account::AccountRepo;
-use super::sqlx::Wrapper;
-use sqlx::{Executor, Postgres};
+use super::executor::IntoInner;
 
-struct PostgresAccountRepo<'a, R, M> {
-    inner: Wrapper<'a, R, M>,
+struct PostgresAccountRepo<T> {
+    inner: T,
 }
 
-impl<'a, R, M> PostgresAccountRepo<'a, R, M>
-where
-    R: 'a,
-    M: 'a,
-{
-    fn new<I>(inner: I) -> Self
-    where
-        I: Into<Wrapper<'a, R, M>>,
-    {
-        Self {
-            inner: inner.into(),
-        }
+impl<T> From<T> for PostgresAccountRepo<T> {
+    fn from(inner: T) -> Self {
+        Self { inner }
     }
 }
 
@@ -29,15 +19,36 @@ struct PostgresAccount {
 }
 
 #[async_trait]
-impl<'a, R, M> AccountRepo for PostgresAccountRepo<'a, R, M>
+impl<T> AccountRepo for PostgresAccountRepo<T>
 where
-    R: Send + 'a,
-    M: Send + 'a,
-    for<'b> Wrapper<'b, R, M>: Executor<'b, Database = Postgres>,
+    T: Send,
+    for<'b> T: IntoInner<'b>,
 {
-    async fn get_account(&mut self, input: &str) {
-        let inner = Wrapper::<'_, R, M>::from(&mut self.inner);
+    async fn get_account(&mut self, _input: &str) {
+        sqlx::query_as::<_, PostgresAccount>("SELECT * FROM ACCOUNT")
+            .fetch_many(self.inner.inner());
+    }
+}
 
-        sqlx::query_as::<_, PostgresAccount>("SELECT * FROM ACCOUNT").fetch_many(inner);
+#[cfg(all(test, feature = "container"))]
+mod tests {
+    use sqlx::PgPool;
+    use testcontainers::{clients, images, Docker};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test() {
+        let docker = clients::Cli::default();
+        let postgres_image = images::postgres::Postgres::default();
+        let node = docker.run(postgres_image);
+
+        let port = node.get_host_port(5432).unwrap();
+        let connection_string = format!("postgres://postgres:postgres@localhost:{}/postgres", port);
+
+        let pool = PgPool::connect(&connection_string).await.unwrap();
+
+        let mut account_repo = PostgresAccountRepo::from(&pool);
+        account_repo.get_account("test").await;
     }
 }

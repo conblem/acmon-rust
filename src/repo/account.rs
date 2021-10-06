@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use etcd_client::Client;
 
 #[async_trait]
 pub(super) trait AccountRepo {

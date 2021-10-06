@@ -165,11 +165,3 @@ where
 {
     res.map_err(LimitServiceError::Service)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test() {}
-}

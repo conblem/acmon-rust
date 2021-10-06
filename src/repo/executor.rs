@@ -1,6 +1,6 @@
 use sqlx::{Executor, Postgres};
 
-trait IntoInner<'b> {
+pub(super) trait IntoInner<'b> {
     type Inner: Executor<'b, Database = Postgres>;
     fn inner(&'b mut self) -> Self::Inner;
 }
@@ -28,7 +28,7 @@ where
 #[cfg(all(test, feature = "container"))]
 mod tests {
     use sqlx::postgres::PgRow;
-    use sqlx::{PgPool, Postgres, Row};
+    use sqlx::{PgPool, Row};
     use testcontainers::{clients, images, Docker};
 
     use super::*;
