@@ -26,7 +26,9 @@ where
 {
     async fn get_account(&mut self, _input: &str) {
         sqlx::query_as::<_, PostgresAccount>("SELECT * FROM ACCOUNT")
-            .fetch_many(self.inner.inner());
+            .fetch_all(self.inner.inner())
+            .await
+            .unwrap();
     }
 }
 
