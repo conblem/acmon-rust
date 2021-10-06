@@ -1,7 +1,10 @@
 use async_trait::async_trait;
+use sqlx::migrate::Migrator;
 
 use super::account::AccountRepo;
 use super::executor::IntoInner;
+
+static MIGRATOR: Migrator = sqlx::migrate!();
 
 struct PostgresAccountRepo<T> {
     inner: T,
@@ -25,7 +28,7 @@ where
     for<'b> T: IntoInner<'b>,
 {
     async fn get_account(&mut self, _input: &str) {
-        sqlx::query_as::<_, PostgresAccount>("SELECT * FROM ACCOUNT")
+        let res = sqlx::query_as::<_, PostgresAccount>("SELECT * FROM ACCOUNT")
             .fetch_all(self.inner.inner())
             .await
             .unwrap();
@@ -36,11 +39,15 @@ where
 mod tests {
     use sqlx::PgPool;
     use testcontainers::{clients, images, Docker};
+    use sqlx::migrate::Migrator;
+    use anyhow::Result;
+
+    static MIGRATOR: Migrator = sqlx::migrate!();
 
     use super::*;
 
     #[tokio::test]
-    async fn test() {
+    async fn test() -> Result<()> {
         let docker = clients::Cli::default();
         let postgres_image = images::postgres::Postgres::default();
         let node = docker.run(postgres_image);
@@ -48,9 +55,12 @@ mod tests {
         let port = node.get_host_port(5432).unwrap();
         let connection_string = format!("postgres://postgres:postgres@localhost:{}/postgres", port);
 
-        let pool = PgPool::connect(&connection_string).await.unwrap();
+        let pool = PgPool::connect(&connection_string).await?;
+        MIGRATOR.run(&pool).await?;
 
         let mut account_repo = PostgresAccountRepo::from(&pool);
         account_repo.get_account("test").await;
+
+        Ok(())
     }
 }

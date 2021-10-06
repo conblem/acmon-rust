@@ -6,7 +6,7 @@ use tracing::{debug, info, instrument, Span};
 
 #[derive(Deserialize, Debug)]
 pub struct Config {
-    pub db: Vec<String>,
+    pub db: String,
     pub url: String,
 }
 
