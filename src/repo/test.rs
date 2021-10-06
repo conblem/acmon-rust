@@ -10,7 +10,7 @@ where
     &'b R: Executor<'b, Database = Postgres>,
 {
     type Inner = &'b R;
-    fn inner(&'b mut self) -> &'b R {
+    fn inner(&'b mut self) -> Self::Inner {
         self
     }
 }
@@ -20,7 +20,7 @@ where
     &'b mut M: Executor<'b, Database = Postgres>,
 {
     type Inner = &'b mut M;
-    fn inner(&'b mut self) -> &'b mut M {
+    fn inner(&'b mut self) -> Self::Inner {
         self
     }
 }
