@@ -16,15 +16,27 @@ impl<T> From<T> for PostgresAccountRepo<T> {
     }
 }
 
+struct Test {
+    id: i64
+}
+
 #[derive(sqlx::FromRow)]
 struct PostgresAccount {
     id: i64,
 }
 
+impl From<PostgresAccount> for Test {
+    fn from(account: PostgresAccount) -> Self {
+        let PostgresAccount { id } = account;
+        Self {
+            id
+        }
+    }
+}
+
 #[async_trait]
-impl<T> AccountRepo for PostgresAccountRepo<T>
+impl<T: Send> AccountRepo for PostgresAccountRepo<T>
 where
-    T: Send,
     for<'b> T: IntoInner<'b>,
 {
     async fn get_account(&mut self, _input: &str) {
@@ -37,10 +49,10 @@ where
 
 #[cfg(all(test, feature = "container"))]
 mod tests {
+    use anyhow::Result;
+    use sqlx::migrate::Migrator;
     use sqlx::PgPool;
     use testcontainers::{clients, images, Docker};
-    use sqlx::migrate::Migrator;
-    use anyhow::Result;
 
     static MIGRATOR: Migrator = sqlx::migrate!();
 

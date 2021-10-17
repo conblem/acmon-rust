@@ -1,6 +1,5 @@
 use anyhow::{Error, Result};
-use futures_util::future;
-use futures_util::FutureExt;
+use futures_util::{future, FutureExt};
 use hyper::{Body, Response};
 use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};

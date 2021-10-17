@@ -8,6 +8,7 @@ use tracing::{debug, info, instrument, Span};
 pub struct Config {
     pub db: String,
     pub url: String,
+    pub migrations: bool,
 }
 
 const DEFAULT_CONFIG_PATH: &str = "config.yaml";
