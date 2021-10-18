@@ -1,26 +1,26 @@
 use sqlx::{Executor, Postgres};
 
-pub(super) trait IntoInner<'b> {
-    type Inner: Executor<'b, Database = Postgres>;
-    fn inner(&'b mut self) -> Self::Inner;
+pub(super) trait IsExecutor<'b> {
+    type Bound: Executor<'b, Database = Postgres>;
+    fn coerce(&'b mut self) -> Self::Bound;
 }
 
-impl<'a, 'b, R: 'b> IntoInner<'b> for &'a R
+impl<'a, 'b, R: 'b> IsExecutor<'b> for &'a R
 where
     &'b R: Executor<'b, Database = Postgres>,
 {
-    type Inner = &'b R;
-    fn inner(&'b mut self) -> Self::Inner {
+    type Bound = &'b R;
+    fn coerce(&'b mut self) -> Self::Bound {
         self
     }
 }
 
-impl<'a, 'b, M: 'b> IntoInner<'b> for &'a mut M
+impl<'a, 'b, M: 'b> IsExecutor<'b> for &'a mut M
 where
     &'b mut M: Executor<'b, Database = Postgres>,
 {
-    type Inner = &'b mut M;
-    fn inner(&'b mut self) -> Self::Inner {
+    type Bound = &'b mut M;
+    fn coerce(&'b mut self) -> Self::Bound {
         self
     }
 }
@@ -53,18 +53,18 @@ mod tests {
 
     async fn execute<T>(mut executor: T)
     where
-        for<'b> T: IntoInner<'b>,
+        for<'b> T: IsExecutor<'b>,
     {
         let res = sqlx::query("select 1 + 1")
             .try_map(|row: PgRow| row.try_get::<i32, _>(0))
-            .fetch_one(executor.inner())
+            .fetch_one(executor.coerce())
             .await
             .unwrap();
         assert_eq!(2, res);
 
         let res = sqlx::query("select 2 + 2")
             .try_map(|row: PgRow| row.try_get::<i32, _>(0))
-            .fetch_one(executor.inner())
+            .fetch_one(executor.coerce())
             .await
             .unwrap();
         assert_eq!(4, res);

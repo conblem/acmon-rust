@@ -1,4 +1,3 @@
 CREATE TABLE account (
     id SERIAL PRIMARY KEY
 );
-
