@@ -1,49 +1,38 @@
 use async_trait::async_trait;
+use futures_util::{FutureExt, TryStreamExt};
 use sqlx::migrate::Migrator;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{Executor, PgPool};
+use sqlx::PgPool;
 
-use super::account::AccountRepo;
+use super::account::{Account, AccountRepo};
 use super::executor::IsExecutor;
 
 static MIGRATOR: Migrator = sqlx::migrate!();
 
-struct PostgresAccountRepo<T> {
-    inner: T,
-}
-
-impl<T> From<T> for PostgresAccountRepo<T> {
-    fn from(inner: T) -> Self {
-        Self { inner }
-    }
-}
-
-struct Test {
-    id: i64,
-}
-
 #[derive(sqlx::FromRow)]
-struct PostgresAccount {
+struct PgAccount {
     id: i64,
 }
 
-impl From<PostgresAccount> for Test {
-    fn from(account: PostgresAccount) -> Self {
-        let PostgresAccount { id } = account;
+impl From<PgAccount> for Account {
+    fn from(account: PgAccount) -> Self {
+        let PgAccount { id } = account;
         Self { id }
     }
 }
 
 #[async_trait]
-impl<T: Send> AccountRepo for PostgresAccountRepo<T>
+impl<T: Send> AccountRepo for T
 where
     for<'b> T: IsExecutor<'b>,
 {
-    async fn get_account(&mut self, _input: &str) {
-        let res = sqlx::query_as::<_, PostgresAccount>("SELECT * FROM ACCOUNT")
-            .fetch_all(self.inner.coerce())
+    async fn get_accounts(&mut self) -> Vec<Account> {
+        sqlx::query_as::<_, PgAccount>("SELECT * FROM account")
+            .fetch(self.coerce())
+            .map_ok(Account::from)
+            .try_collect()
             .await
-            .unwrap();
+            .unwrap()
     }
 }
 
@@ -58,14 +47,16 @@ where
         .after_connect(move |conn| {
             let schema = schema.clone();
 
-            Box::pin(async move {
+            async move {
                 // always use this schema for connections
-                sqlx::query("SET search_path TO $1")
+                sqlx::query(&format!("SET search_path TO {}", schema))
                     .bind(schema)
-                    .execute(conn);
+                    .execute(conn)
+                    .await?;
 
                 Ok(())
-            })
+            }
+            .boxed()
         })
         .connect(db.as_ref())
         .await
@@ -75,12 +66,12 @@ where
 mod tests {
     use anyhow::Result;
     use sqlx::migrate::Migrator;
-    use sqlx::PgPool;
+    use sqlx::{Executor, PgPool};
     use testcontainers::{clients, images, Docker};
 
-    static MIGRATOR: Migrator = sqlx::migrate!();
-
     use super::*;
+
+    static MIGRATOR: Migrator = sqlx::migrate!();
 
     #[tokio::test]
     async fn test() -> Result<()> {
@@ -91,17 +82,20 @@ mod tests {
         let port = node.get_host_port(5432).unwrap();
         let connection_string = format!("postgres://postgres:postgres@localhost:{}/postgres", port);
 
-        // create schema acmon needs the schema acmon
+        // create schema acmon
+        // connection fails otherwise
+        // todo: create a test for this
         let pool = PgPool::connect(&connection_string).await?;
         pool.execute("CREATE SCHEMA IF NOT EXISTS acmon;").await?;
 
-        let schema = "acmon".to_string();
-        let pool = connect(&connection_string, schema).await?;
+        let pool = connect(connection_string, "acmon").await?;
         MIGRATOR.run(&pool).await?;
 
-        let mut account_repo = PostgresAccountRepo::from(&pool);
-        account_repo.get_account("test").await;
+        (&pool).get_accounts().await;
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn should_fail_if_schema_does_not_exist() {}
 }

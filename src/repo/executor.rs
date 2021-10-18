@@ -49,6 +49,10 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         execute(&mut conn).await;
         execute(&mut conn).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+        execute(&mut transaction).await;
+        execute(&mut transaction).await;
     }
 
     async fn execute<T>(mut executor: T)
