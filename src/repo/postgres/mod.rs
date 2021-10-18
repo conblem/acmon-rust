@@ -1,11 +1,10 @@
 use async_trait::async_trait;
 use sqlx::migrate::Migrator;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{Executor, PgPool, Acquire};
+use sqlx::{Executor, PgPool};
 
 use super::account::AccountRepo;
 use super::executor::IsExecutor;
-use crate::config::Config;
 
 static MIGRATOR: Migrator = sqlx::migrate!();
 
@@ -20,7 +19,7 @@ impl<T> From<T> for PostgresAccountRepo<T> {
 }
 
 struct Test {
-    id: i64
+    id: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -31,9 +30,7 @@ struct PostgresAccount {
 impl From<PostgresAccount> for Test {
     fn from(account: PostgresAccount) -> Self {
         let PostgresAccount { id } = account;
-        Self {
-            id
-        }
+        Self { id }
     }
 }
 
@@ -50,21 +47,27 @@ where
     }
 }
 
-async fn connect(db: &str) -> Result<PgPool, sqlx::Error> {
-    PgPoolOptions::new()
-        .after_connect(|conn| {
-            Box::pin(async move {
-                let mut transaction = conn.begin().await?;
+async fn connect<C, S>(db: C, schema: S) -> Result<PgPool, sqlx::Error>
+where
+    C: AsRef<str>,
+    S: Into<String>,
+{
+    let schema = schema.into();
 
+    PgPoolOptions::new()
+        .after_connect(move |conn| {
+            let schema = schema.clone();
+
+            Box::pin(async move {
                 // always use this schema for connections
-                transaction.execute("CREATE SCHEMA IF NOT EXISTS acmon;").await?;
-                transaction.execute("SET search_path TO acmon;").await?;
-                transaction.commit().await?;
+                sqlx::query("SET search_path TO $1")
+                    .bind(schema)
+                    .execute(conn);
 
                 Ok(())
             })
         })
-        .connect(db)
+        .connect(db.as_ref())
         .await
 }
 
@@ -87,7 +90,13 @@ mod tests {
 
         let port = node.get_host_port(5432).unwrap();
         let connection_string = format!("postgres://postgres:postgres@localhost:{}/postgres", port);
-        let pool = connect(&connection_string).await?;
+
+        // create schema acmon needs the schema acmon
+        let pool = PgPool::connect(&connection_string).await?;
+        pool.execute("CREATE SCHEMA IF NOT EXISTS acmon;").await?;
+
+        let schema = "acmon".to_string();
+        let pool = connect(&connection_string, schema).await?;
         MIGRATOR.run(&pool).await?;
 
         let mut account_repo = PostgresAccountRepo::from(&pool);
