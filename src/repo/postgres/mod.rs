@@ -43,8 +43,17 @@ where
     C: AsRef<str>,
     S: Display,
 {
+    // SET search_path for all future queries
+    // is vulnerable to SQL Injection use with caution
+    // could also be done like this:
+    // https://github.com/launchbadge/sqlx/issues/907#issuecomment-747072077
+    // https://www.postgresql.org/docs/14/ecpg-connect.html
+    // but im not sure if this would change the behavior for other db connections
+    // todo: figure this out
     let schema = format!("SET search_path TO {}", schema);
+
     // use arc to only allocate once for all connections
+    // using Arc<str> also gives us only a single misdirection
     let schema = schema.into_boxed_str().into();
 
     PgPoolOptions::new()
@@ -52,7 +61,7 @@ where
             let schema = Arc::clone(&schema);
 
             async move {
-                // always use this schema for connections
+                // run prepared query
                 sqlx::query(&schema).execute(conn).await?;
 
                 Ok(())
