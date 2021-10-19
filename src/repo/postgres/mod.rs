@@ -15,7 +15,7 @@ static MIGRATOR: Migrator = sqlx::migrate!();
 // and we just manually map to Account
 #[derive(sqlx::FromRow)]
 struct PgAccount {
-    id: i64,
+    id: i32,
     email: String,
 }
 
@@ -41,12 +41,14 @@ where
             .await
     }
 
-    async fn create_account(&mut self, account: &Account) -> Result<(), Self::Error> {
-        sqlx::query("INSERT INTO account (id, email) VALUES ($1, $2)")
-            .bind(&account.id)
+    async fn create_account(&mut self, account: &mut Account) -> Result<(), Self::Error> {
+        // we return the id of the created account to set on the param
+        let id = sqlx::query_scalar("INSERT INTO account (email) VALUES ($1) RETURNING id")
             .bind(&account.email)
-            .execute(self.coerce())
+            .fetch_one(self.coerce())
             .await?;
+
+        account.id = id;
 
         Ok(())
     }
@@ -71,7 +73,7 @@ where
     }
 }
 
-async fn connect<C, S>(db: C, schema: S) -> Result<PgPool, sqlx::Error>
+async fn connect_and_run_migration<C, S>(db: C, schema: S) -> Result<PgPool, sqlx::Error>
 where
     C: AsRef<str>,
     S: Display,
@@ -89,7 +91,7 @@ where
     // using Arc<str> also gives us only a single misdirection
     let schema = schema.into_boxed_str().into();
 
-    PgPoolOptions::new()
+    let pool = PgPoolOptions::new()
         .after_connect(move |conn| {
             let schema = Arc::clone(&schema);
 
@@ -102,56 +104,48 @@ where
             .boxed()
         })
         .connect(db.as_ref())
-        .await
+        .await?;
+
+    MIGRATOR.run(&pool).await?;
+    Ok(pool)
 }
 
 #[cfg(all(test, feature = "container"))]
 mod tests {
     use anyhow::{anyhow, Result};
-    use sqlx::migrate::Migrator;
     use sqlx::{Executor, PgPool};
     use testcontainers::{clients, images, Container, Docker};
 
     use super::*;
 
-    static MIGRATOR: Migrator = sqlx::migrate!();
-
-    fn create_container(
+    async fn create_mock_database(
         docker: &clients::Cli,
-    ) -> Container<'_, clients::Cli, images::postgres::Postgres> {
+    ) -> Result<(
+        Container<'_, clients::Cli, images::postgres::Postgres>,
+        String,
+    )> {
         let postgres_image = images::postgres::Postgres::default();
-        docker.run(postgres_image)
-    }
+        let container = docker.run(postgres_image);
 
-    fn get_connection_string(
-        container: &Container<'_, clients::Cli, images::postgres::Postgres>,
-    ) -> Result<String> {
         let port = container
             .get_host_port(5432)
             .ok_or_else(|| anyhow!("Port not found"))?;
 
         let connection_string = format!("postgres://postgres:postgres@localhost:{}/postgres", port);
-        Ok(connection_string)
-    }
 
-    async fn create_acmon_schema<T: AsRef<str>>(connection_string: T) -> Result<()> {
         let pool = PgPool::connect(connection_string.as_ref()).await?;
-        // we create the schmea before running our migrations
+        // we create the schema before running our migrations
         pool.execute("CREATE SCHEMA IF NOT EXISTS acmon;").await?;
 
-        Ok(())
+        Ok((container, connection_string))
     }
 
     #[tokio::test]
     async fn custom_schema_works() -> Result<()> {
         let docker = clients::Cli::default();
-        let container = create_container(&docker);
-        let connection_string = get_connection_string(&container)?;
-        create_acmon_schema(&connection_string).await?;
+        let (_container, connection_string) = create_mock_database(&docker).await?;
 
-        let pool = connect(connection_string, "acmon").await?;
-        // run migration on acmon schema
-        MIGRATOR.run(&pool).await?;
+        let pool = connect_and_run_migration(connection_string, "acmon").await?;
 
         // explicitly select account on acmon schema to test if migration got run
         // on correct schema
@@ -165,6 +159,76 @@ mod tests {
             .fetch_one(&pool)
             .await;
         assert!(failed_count.is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_accounts_works() -> Result<()> {
+        let docker = clients::Cli::default();
+        let (_container, connection_string) = create_mock_database(&docker).await?;
+
+        let pool = connect_and_run_migration(connection_string, "acmon").await?;
+
+        let accounts = (&pool).get_accounts().await?;
+        assert_eq!(accounts.len(), 0);
+
+        // insert example row for test
+        (&pool)
+            .execute("INSERT INTO account (email) VALUES ('test@test.com')")
+            .await?;
+
+        let accounts = (&pool).get_accounts().await?;
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].email, "test@test.com");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_account_works() -> Result<()> {
+        let docker = clients::Cli::default();
+        let (_container, connection_string) = create_mock_database(&docker).await?;
+
+        let pool = connect_and_run_migration(connection_string, "acmon").await?;
+
+        // insert example row for test
+        let mut expected = Account {
+            id: 0,
+            email: "test@test.com".to_string(),
+        };
+        (&pool).create_account(&mut expected).await?;
+        // id should be set now
+        assert_eq!(expected.id, 1);
+
+        // we get the accounts using the pool method which is tested
+        // that's why we can now use it in a test
+        let accounts = (&pool).get_accounts().await?;
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].id, 1);
+        assert_eq!(accounts[0].email, "test@test.com");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delete_account_works() -> Result<()> {
+        let docker = clients::Cli::default();
+        let (_container, connection_string) = create_mock_database(&docker).await?;
+
+        let pool = connect_and_run_migration(connection_string, "acmon").await?;
+
+        let mut account = Account {
+            id: 0,
+            email: "test@test.com".to_string(),
+        };
+        // create account is also tested now so we use it in this test
+        (&pool).create_account(&mut account).await?;
+        (&pool).delete_account(account).await?;
+
+        // ditto
+        let accounts = (&pool).get_accounts().await?;
+        assert_eq!(accounts.len(), 0);
 
         Ok(())
     }
