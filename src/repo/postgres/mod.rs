@@ -3,6 +3,8 @@ use futures_util::{FutureExt, TryStreamExt};
 use sqlx::migrate::Migrator;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use std::fmt::Display;
+use std::sync::Arc;
 
 use super::account::{Account, AccountRepo};
 use super::executor::IsExecutor;
@@ -39,20 +41,19 @@ where
 async fn connect<C, S>(db: C, schema: S) -> Result<PgPool, sqlx::Error>
 where
     C: AsRef<str>,
-    S: Into<String>,
+    S: Display,
 {
-    let schema = schema.into();
+    let schema = format!("SET search_path TO {}", schema);
+    // use arc to only allocate once for all connections
+    let schema = schema.into_boxed_str().into();
 
     PgPoolOptions::new()
         .after_connect(move |conn| {
-            let schema = schema.clone();
+            let schema = Arc::clone(&schema);
 
             async move {
                 // always use this schema for connections
-                sqlx::query(&format!("SET search_path TO {}", schema))
-                    .bind(schema)
-                    .execute(conn)
-                    .await?;
+                sqlx::query(&schema).execute(conn).await?;
 
                 Ok(())
             }
