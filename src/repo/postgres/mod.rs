@@ -11,15 +11,18 @@ use super::executor::IsExecutor;
 
 static MIGRATOR: Migrator = sqlx::migrate!();
 
+// maybe this type gets removed in the future for better performance
+// and we just manually map to Account
 #[derive(sqlx::FromRow)]
 struct PgAccount {
     id: i64,
+    email: String,
 }
 
 impl From<PgAccount> for Account {
     fn from(account: PgAccount) -> Self {
-        let PgAccount { id } = account;
-        Self { id }
+        let PgAccount { id, email } = account;
+        Self { id, email }
     }
 }
 
@@ -28,13 +31,43 @@ impl<T: Send> AccountRepo for T
 where
     for<'b> T: IsExecutor<'b>,
 {
-    async fn get_accounts(&mut self) -> Vec<Account> {
+    type Error = sqlx::Error;
+
+    async fn get_accounts(&mut self) -> Result<Vec<Account>, Self::Error> {
         sqlx::query_as::<_, PgAccount>("SELECT * FROM account")
             .fetch(self.coerce())
             .map_ok(Account::from)
             .try_collect()
             .await
-            .unwrap()
+    }
+
+    async fn create_account(&mut self, account: &Account) -> Result<(), Self::Error> {
+        sqlx::query("INSERT INTO account (id, email) VALUES ($1, $2)")
+            .bind(&account.id)
+            .bind(&account.email)
+            .execute(self.coerce())
+            .await?;
+
+        Ok(())
+    }
+
+    async fn update_account(&mut self, account: &Account) -> Result<(), Self::Error> {
+        sqlx::query("UPDATE account SET (email) VALUES ($2) WHERE id = $1")
+            .bind(&account.id)
+            .bind(&account.email)
+            .execute(self.coerce())
+            .await?;
+
+        Ok(())
+    }
+
+    async fn delete_account(&mut self, account: Account) -> Result<(), Self::Error> {
+        sqlx::query("DELETE FROM account WHERE id = $1")
+            .bind(account.id)
+            .execute(self.coerce())
+            .await?;
+
+        Ok(())
     }
 }
 
@@ -74,38 +107,65 @@ where
 
 #[cfg(all(test, feature = "container"))]
 mod tests {
-    use anyhow::Result;
+    use anyhow::{anyhow, Result};
     use sqlx::migrate::Migrator;
     use sqlx::{Executor, PgPool};
-    use testcontainers::{clients, images, Docker};
+    use testcontainers::{clients, images, Container, Docker};
 
     use super::*;
 
     static MIGRATOR: Migrator = sqlx::migrate!();
 
-    #[tokio::test]
-    async fn test() -> Result<()> {
-        let docker = clients::Cli::default();
+    fn create_container(
+        docker: &clients::Cli,
+    ) -> Container<'_, clients::Cli, images::postgres::Postgres> {
         let postgres_image = images::postgres::Postgres::default();
-        let node = docker.run(postgres_image);
+        docker.run(postgres_image)
+    }
 
-        let port = node.get_host_port(5432).unwrap();
+    fn get_connection_string(
+        container: &Container<'_, clients::Cli, images::postgres::Postgres>,
+    ) -> Result<String> {
+        let port = container
+            .get_host_port(5432)
+            .ok_or_else(|| anyhow!("Port not found"))?;
+
         let connection_string = format!("postgres://postgres:postgres@localhost:{}/postgres", port);
+        Ok(connection_string)
+    }
 
-        // create schema acmon
-        // connection fails otherwise
-        // todo: create a test for this
-        let pool = PgPool::connect(&connection_string).await?;
+    async fn create_acmon_schema<T: AsRef<str>>(connection_string: T) -> Result<()> {
+        let pool = PgPool::connect(connection_string.as_ref()).await?;
+        // we create the schmea before running our migrations
         pool.execute("CREATE SCHEMA IF NOT EXISTS acmon;").await?;
-
-        let pool = connect(connection_string, "acmon").await?;
-        MIGRATOR.run(&pool).await?;
-
-        (&pool).get_accounts().await;
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn should_fail_if_schema_does_not_exist() {}
+    async fn custom_schema_works() -> Result<()> {
+        let docker = clients::Cli::default();
+        let container = create_container(&docker);
+        let connection_string = get_connection_string(&container)?;
+        create_acmon_schema(&connection_string).await?;
+
+        let pool = connect(connection_string, "acmon").await?;
+        // run migration on acmon schema
+        MIGRATOR.run(&pool).await?;
+
+        // explicitly select account on acmon schema to test if migration got run
+        // on correct schema
+        let count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM acmon.account")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(count, 0);
+
+        // select account from different schema to make sure query fails if schema does not exist
+        let failed_count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.account")
+            .fetch_one(&pool)
+            .await;
+        assert!(failed_count.is_err());
+
+        Ok(())
+    }
 }

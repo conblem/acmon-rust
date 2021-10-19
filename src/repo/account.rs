@@ -1,10 +1,17 @@
 use async_trait::async_trait;
+use std::error::Error;
 
 pub(super) struct Account {
     pub(super) id: i64,
+    pub(super) email: String,
 }
 
 #[async_trait]
 pub(super) trait AccountRepo {
-    async fn get_accounts(&mut self) -> Vec<Account>;
+    type Error: Error + 'static;
+
+    async fn get_accounts(&mut self) -> Result<Vec<Account>, Self::Error>;
+    async fn create_account(&mut self, account: &Account) -> Result<(), Self::Error>;
+    async fn update_account(&mut self, account: &Account) -> Result<(), Self::Error>;
+    async fn delete_account(&mut self, account: Account) -> Result<(), Self::Error>;
 }

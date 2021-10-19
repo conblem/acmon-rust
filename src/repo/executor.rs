@@ -1,13 +1,13 @@
-use sqlx::{Executor, Postgres};
+use sqlx::PgExecutor;
 
 pub(super) trait IsExecutor<'b> {
-    type Bound: Executor<'b, Database = Postgres>;
+    type Bound: PgExecutor<'b>;
     fn coerce(&'b mut self) -> Self::Bound;
 }
 
 impl<'a, 'b, R: 'b> IsExecutor<'b> for &'a R
 where
-    &'b R: Executor<'b, Database = Postgres>,
+    &'b R: PgExecutor<'b>,
 {
     type Bound = &'b R;
     fn coerce(&'b mut self) -> Self::Bound {
@@ -17,7 +17,7 @@ where
 
 impl<'a, 'b, M: 'b> IsExecutor<'b> for &'a mut M
 where
-    &'b mut M: Executor<'b, Database = Postgres>,
+    &'b mut M: PgExecutor<'b>,
 {
     type Bound = &'b mut M;
     fn coerce(&'b mut self) -> Self::Bound {
