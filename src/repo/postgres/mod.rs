@@ -1,81 +1,161 @@
 use async_trait::async_trait;
-use futures_util::{FutureExt, TryStreamExt};
+use futures_util::FutureExt;
+use sea_query::{Expr, Iden, PostgresQueryBuilder, Query, Value};
 use sqlx::migrate::Migrator;
-use sqlx::postgres::PgPoolOptions;
-use sqlx::PgPool;
+use sqlx::postgres::{PgPoolOptions, PgRow};
+use sqlx::{FromRow, PgPool};
 use std::fmt::Display;
 use std::sync::Arc;
 
-use super::account::{Account, AccountRepo};
+sea_query::sea_query_driver_postgres!();
+use sea_query_driver_postgres::{bind_query, bind_query_as};
+
+use super::account::{AccountStruct, Repo};
 use super::executor::IsExecutor;
 
 static MIGRATOR: Migrator = sqlx::migrate!();
 
-// maybe this type gets removed in the future for better performance
-// and we just manually map to Account
-#[derive(sqlx::FromRow)]
-struct PgAccount {
-    id: i32,
-    email: String,
+pub(super) trait Entity: Send + Sync + Unpin + 'static
+where
+    for<'r> Self: FromRow<'r, PgRow>,
+{
+    type Iden: Iden + Copy + Send + Sync + 'static;
+
+    fn table_iden() -> Self::Iden;
+    fn id_iden() -> Self::Iden;
+    fn id(&self) -> i32;
+    fn id_mut(&mut self) -> &mut i32;
+    fn columns_iden() -> Vec<Self::Iden>;
+    fn values(&self) -> Vec<(Self::Iden, Value)>;
 }
 
-impl From<PgAccount> for Account {
-    fn from(account: PgAccount) -> Self {
-        let PgAccount { id, email } = account;
-        Self { id, email }
+#[derive(Iden, Clone, Copy)]
+pub(super) enum Account {
+    Table,
+    Id,
+    Email,
+}
+
+impl Entity for AccountStruct {
+    type Iden = Account;
+
+    fn table_iden() -> Self::Iden {
+        Account::Table
+    }
+
+    fn id_iden() -> Self::Iden {
+        Account::Id
+    }
+
+    fn id(&self) -> i32 {
+        self.id
+    }
+
+    fn id_mut(&mut self) -> &mut i32 {
+        &mut self.id
+    }
+
+    fn columns_iden() -> Vec<Self::Iden> {
+        vec![Account::Email]
+    }
+
+    fn values(&self) -> Vec<(Self::Iden, Value)> {
+        vec![(Account::Email, self.email.clone().into())]
     }
 }
 
 #[async_trait]
-impl<T: Send> AccountRepo for T
+impl<E: Entity, T: Send> Repo<E> for T
 where
     for<'b> T: IsExecutor<'b>,
 {
     type Error = sqlx::Error;
 
     // todo: write test for this
-    async fn fetch_account(&mut self, id: i32) -> Result<Option<Account>, Self::Error> {
-        let account = sqlx::query_as::<_, PgAccount>("SELECT * FROM account where id = $1 LIMIT 1")
-            .bind(id)
+    async fn read(&mut self, id: i32) -> Result<Option<E>, Self::Error> {
+        let table = E::table_iden();
+        let id_iden = E::id_iden();
+        let columns_iden = E::columns_iden();
+
+        let (sql, values) = Query::select()
+            .column(id_iden)
+            .columns(columns_iden)
+            .from(table)
+            .and_where(Expr::col(id_iden).eq(id))
+            .limit(1)
+            .build(PostgresQueryBuilder);
+
+        bind_query_as(sqlx::query_as(&sql), &values)
             .fetch_optional(self.coerce())
-            .await?;
-
-        Ok(account.map(Into::into))
-    }
-
-    async fn fetch_accounts(&mut self) -> Result<Vec<Account>, Self::Error> {
-        sqlx::query_as::<_, PgAccount>("SELECT * FROM account")
-            .fetch(self.coerce())
-            .map_ok(Account::from)
-            .try_collect()
             .await
     }
 
-    async fn create_account(&mut self, account: &mut Account) -> Result<(), Self::Error> {
-        // we return the id of the created account to set on the param
-        let id = sqlx::query_scalar("INSERT INTO account (email) VALUES ($1) RETURNING id")
-            .bind(&account.email)
+    async fn read_all(&mut self) -> Result<Vec<E>, Self::Error> {
+        let table = E::table_iden();
+        let id_iden = E::id_iden();
+        let columns_iden = E::columns_iden();
+
+        let (sql, values) = Query::select()
+            .column(id_iden)
+            .columns(columns_iden)
+            .from(table)
+            .build(PostgresQueryBuilder);
+
+        bind_query_as(sqlx::query_as(&sql), &values)
+            .fetch_all(self.coerce())
+            .await
+    }
+
+    async fn create(&mut self, account: &mut E) -> Result<(), Self::Error> {
+        let table = E::table_iden();
+        let id_iden = E::id_iden();
+        let values = account.values();
+
+        let (columns, values): (Vec<E::Iden>, Vec<Value>) = values.into_iter().unzip();
+        let (sql, values) = Query::insert()
+            .into_table(table)
+            .columns(columns)
+            .values_panic(values)
+            .returning_col(id_iden)
+            .build(PostgresQueryBuilder);
+
+        let (id,) = bind_query_as(sqlx::query_as(&sql), &values)
             .fetch_one(self.coerce())
             .await?;
 
-        account.id = id;
+        *account.id_mut() = id;
 
         Ok(())
     }
 
-    async fn update_account(&mut self, account: &Account) -> Result<(), Self::Error> {
-        sqlx::query("UPDATE account SET (email) VALUES ($2) WHERE id = $1")
-            .bind(&account.id)
-            .bind(&account.email)
+    async fn update(&mut self, account: &E) -> Result<(), Self::Error> {
+        let table = E::table_iden();
+        let id_iden = E::id_iden();
+        let values = account.values();
+
+        let (sql, values) = Query::update()
+            .table(table)
+            .values(values)
+            .and_where(Expr::col(id_iden).eq(account.id()))
+            .build(PostgresQueryBuilder);
+
+        bind_query(sqlx::query(&sql), &values)
             .execute(self.coerce())
             .await?;
 
         Ok(())
     }
 
-    async fn delete_account(&mut self, account: Account) -> Result<(), Self::Error> {
-        sqlx::query("DELETE FROM account WHERE id = $1")
-            .bind(account.id)
+    async fn delete(&mut self, account: E) -> Result<(), Self::Error> {
+        let table = E::table_iden();
+        let id_iden = E::id_iden();
+
+        let (sql, values) = Query::delete()
+            .from_table(table)
+            .and_where(Expr::col(id_iden).eq(account.id()))
+            .build(PostgresQueryBuilder);
+
+        bind_query(sqlx::query(&sql), &values)
             .execute(self.coerce())
             .await?;
 
@@ -174,13 +254,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_accounts_works() -> Result<()> {
+    async fn fetch_accounts_works() -> Result<()> {
         let docker = clients::Cli::default();
         let (_container, connection_string) = create_mock_database(&docker).await?;
 
         let pool = connect_and_run_migration(connection_string, "acmon").await?;
 
-        let accounts = (&pool).fetch_accounts().await?;
+        let accounts: Vec<AccountStruct> = (&pool).read_all().await?;
         assert_eq!(accounts.len(), 0);
 
         // insert example row for test
@@ -188,7 +268,7 @@ mod tests {
             .execute("INSERT INTO account (email) VALUES ('test@test.com')")
             .await?;
 
-        let accounts = (&pool).fetch_accounts().await?;
+        let accounts: Vec<AccountStruct> = (&pool).read_all().await?;
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].email, "test@test.com");
 
@@ -203,17 +283,17 @@ mod tests {
         let pool = connect_and_run_migration(connection_string, "acmon").await?;
 
         // insert example row for test
-        let mut expected = Account {
+        let mut expected = AccountStruct {
             id: 0,
             email: "test@test.com".to_string(),
         };
-        (&pool).create_account(&mut expected).await?;
+        (&pool).create(&mut expected).await?;
         // id should be set now
         assert_eq!(expected.id, 1);
 
         // we get the accounts using the pool method which is tested
         // that's why we can now use it in a test
-        let accounts = (&pool).fetch_accounts().await?;
+        let accounts: Vec<AccountStruct> = (&pool).read_all().await?;
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].id, 1);
         assert_eq!(accounts[0].email, "test@test.com");
@@ -228,16 +308,16 @@ mod tests {
 
         let pool = connect_and_run_migration(connection_string, "acmon").await?;
 
-        let mut account = Account {
+        let mut account = AccountStruct {
             id: 0,
             email: "test@test.com".to_string(),
         };
         // create account is also tested now so we use it in this test
-        (&pool).create_account(&mut account).await?;
-        (&pool).delete_account(account).await?;
+        (&pool).create(&mut account).await?;
+        (&pool).delete(account).await?;
 
         // ditto
-        let accounts = (&pool).fetch_accounts().await?;
+        let accounts: Vec<AccountStruct> = (&pool).read_all().await?;
         assert_eq!(accounts.len(), 0);
 
         Ok(())

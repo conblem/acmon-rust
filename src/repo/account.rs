@@ -1,18 +1,20 @@
 use async_trait::async_trait;
+use sqlx::FromRow;
 use std::error::Error;
 
-pub(super) struct Account {
+#[derive(FromRow)]
+pub(super) struct AccountStruct {
     pub(super) id: i32,
     pub(super) email: String,
 }
 
 #[async_trait]
-pub(super) trait AccountRepo {
+pub(super) trait Repo<E> {
     type Error: Error + 'static;
 
-    async fn fetch_account(&mut self, id: i32) -> Result<Option<Account>, Self::Error>;
-    async fn fetch_accounts(&mut self) -> Result<Vec<Account>, Self::Error>;
-    async fn create_account(&mut self, account: &mut Account) -> Result<(), Self::Error>;
-    async fn update_account(&mut self, account: &Account) -> Result<(), Self::Error>;
-    async fn delete_account(&mut self, account: Account) -> Result<(), Self::Error>;
+    async fn read(&mut self, id: i32) -> Result<Option<E>, Self::Error>;
+    async fn read_all(&mut self) -> Result<Vec<E>, Self::Error>;
+    async fn create(&mut self, account: &mut E) -> Result<(), Self::Error>;
+    async fn update(&mut self, account: &E) -> Result<(), Self::Error>;
+    async fn delete(&mut self, account: E) -> Result<(), Self::Error>;
 }
