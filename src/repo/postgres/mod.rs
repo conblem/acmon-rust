@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use futures_util::FutureExt;
-use sea_query::{Expr, Iden, PostgresQueryBuilder, Query, Value};
+use sea_query::{Expr, Iden, Query, Value};
 use sqlx::migrate::Migrator;
-use sqlx::postgres::{PgPoolOptions, PgRow};
-use sqlx::{FromRow, PgPool};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{FromRow, PgPool, Type};
 use std::fmt::Display;
 use std::sync::Arc;
 
@@ -12,22 +12,11 @@ use sea_query_driver_postgres::{bind_query, bind_query_as};
 
 use super::account::{AccountStruct, Repo};
 use super::executor::IsExecutor;
+use crate::repo::{Entity, IsQueryBuilder};
+use sqlx::decode::Decode;
+use std::marker::PhantomData;
 
 static MIGRATOR: Migrator = sqlx::migrate!();
-
-pub(super) trait Entity: Send + Sync + Unpin + 'static
-where
-    for<'r> Self: FromRow<'r, PgRow>,
-{
-    type Iden: Iden + Copy + Send + Sync + 'static;
-
-    fn table_iden() -> Self::Iden;
-    fn id_iden() -> Self::Iden;
-    fn id(&self) -> i32;
-    fn id_mut(&mut self) -> &mut i32;
-    fn columns_iden() -> Vec<Self::Iden>;
-    fn values(&self) -> Vec<(Self::Iden, Value)>;
-}
 
 #[derive(Iden, Clone, Copy)]
 pub(super) enum Account {
@@ -64,10 +53,29 @@ impl Entity for AccountStruct {
     }
 }
 
+struct RepoWrapper<DB, T> {
+    _phantom: PhantomData<DB>,
+    inner: T,
+}
+
+impl<DB, T> From<T> for RepoWrapper<DB, T> {
+    fn from(inner: T) -> Self {
+        Self {
+            _phantom: PhantomData,
+            inner,
+        }
+    }
+}
+
 #[async_trait]
-impl<E: Entity, T: Send> Repo<E> for T
+impl<'a, DB: IsQueryBuilder<'a>, E: Entity, T: Send + 'a> Repo<E> for RepoWrapper<DB, T>
 where
-    for<'b> T: IsExecutor<'b>,
+    for<'r> E: FromRow<'r, DB::Row>,
+    i32: for<'b> Decode<'b, DB>,
+    i32: Type<DB>,
+    String: for<'b> Decode<'b, DB>,
+    String: Type<DB>,
+    for<'b> T: IsExecutor<'b, DB>,
 {
     type Error = sqlx::Error;
 
@@ -83,9 +91,9 @@ where
             .from(table)
             .and_where(Expr::col(id_iden).eq(id))
             .limit(1)
-            .build(PostgresQueryBuilder);
+            .build(DB::query_builder());
 
-        bind_query_as(sqlx::query_as(&sql), &values)
+        DB::bind_query_as(sqlx::query_as::<DB, _>(&sql), &values)
             .fetch_optional(self.coerce())
             .await
     }
@@ -99,9 +107,9 @@ where
             .column(id_iden)
             .columns(columns_iden)
             .from(table)
-            .build(PostgresQueryBuilder);
+            .build(DB::query_builder());
 
-        bind_query_as(sqlx::query_as(&sql), &values)
+        DB::bind_query_as(sqlx::query_as::<DB, _>(&sql), &values)
             .fetch_all(self.coerce())
             .await
     }
@@ -117,9 +125,9 @@ where
             .columns(columns)
             .values_panic(values)
             .returning_col(id_iden)
-            .build(PostgresQueryBuilder);
+            .build(DB::query_builder());
 
-        let (id,) = bind_query_as(sqlx::query_as(&sql), &values)
+        let (id,) = DB::bind_query_as(sqlx::query_as::<DB, _>(&sql), &values)
             .fetch_one(self.coerce())
             .await?;
 
@@ -137,9 +145,9 @@ where
             .table(table)
             .values(values)
             .and_where(Expr::col(id_iden).eq(account.id()))
-            .build(PostgresQueryBuilder);
+            .build(DB::query_builder());
 
-        bind_query(sqlx::query(&sql), &values)
+        bind_query(sqlx::query::<DB>(&sql), &values)
             .execute(self.coerce())
             .await?;
 
@@ -153,9 +161,9 @@ where
         let (sql, values) = Query::delete()
             .from_table(table)
             .and_where(Expr::col(id_iden).eq(account.id()))
-            .build(PostgresQueryBuilder);
+            .build(DB::query_builder());
 
-        bind_query(sqlx::query(&sql), &values)
+        DB::bind_query(sqlx::query::<DB>(&sql), &values)
             .execute(self.coerce())
             .await?;
 
@@ -231,7 +239,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn custom_schema_works() -> Result<()> {
+    async fn validate_custom_schema_works() -> Result<()> {
         let docker = clients::Cli::default();
         let (_container, connection_string) = create_mock_database(&docker).await?;
 
@@ -254,21 +262,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_accounts_works() -> Result<()> {
+    async fn read_all_works() -> Result<()> {
         let docker = clients::Cli::default();
         let (_container, connection_string) = create_mock_database(&docker).await?;
 
         let pool = connect_and_run_migration(connection_string, "acmon").await?;
+        let mut repo = RepoWrapper::from(&pool);
 
-        let accounts: Vec<AccountStruct> = (&pool).read_all().await?;
+        let accounts: Vec<AccountStruct> = repo.read_all().await?;
         assert_eq!(accounts.len(), 0);
 
         // insert example row for test
-        (&pool)
-            .execute("INSERT INTO account (email) VALUES ('test@test.com')")
+        pool.execute("INSERT INTO account (email) VALUES ('test@test.com')")
             .await?;
 
-        let accounts: Vec<AccountStruct> = (&pool).read_all().await?;
+        let accounts: Vec<AccountStruct> = repo.read_all().await?;
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].email, "test@test.com");
 
@@ -276,24 +284,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_account_works() -> Result<()> {
+    async fn read_works() -> Result<()> {
         let docker = clients::Cli::default();
         let (_container, connection_string) = create_mock_database(&docker).await?;
 
         let pool = connect_and_run_migration(connection_string, "acmon").await?;
+        let mut repo = RepoWrapper::from(&pool);
+
+        let account: Option<AccountStruct> = repo.read(1).await?;
+        assert_eq!(account, None);
+
+        let mut expected = AccountStruct {
+            id: 0,
+            email: "test@test.com".to_string(),
+        };
+        repo.create(&mut expected).await?;
+
+        let actual: AccountStruct = repo
+            .read(expected.id)
+            .await?
+            .ok_or_else(|| anyhow!("record not found"))?;
+
+        assert_eq!(actual, expected);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_works() -> Result<()> {
+        let docker = clients::Cli::default();
+        let (_container, connection_string) = create_mock_database(&docker).await?;
+
+        let pool = connect_and_run_migration(connection_string, "acmon").await?;
+        let mut repo = RepoWrapper::from(&pool);
 
         // insert example row for test
         let mut expected = AccountStruct {
             id: 0,
             email: "test@test.com".to_string(),
         };
-        (&pool).create(&mut expected).await?;
+        repo.create(&mut expected).await?;
         // id should be set now
         assert_eq!(expected.id, 1);
 
         // we get the accounts using the pool method which is tested
         // that's why we can now use it in a test
-        let accounts: Vec<AccountStruct> = (&pool).read_all().await?;
+        let accounts: Vec<AccountStruct> = repo.read_all().await?;
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].id, 1);
         assert_eq!(accounts[0].email, "test@test.com");
@@ -302,23 +338,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_account_works() -> Result<()> {
+    async fn delete_works() -> Result<()> {
         let docker = clients::Cli::default();
         let (_container, connection_string) = create_mock_database(&docker).await?;
 
         let pool = connect_and_run_migration(connection_string, "acmon").await?;
+        let mut repo = RepoWrapper::from(&pool);
 
         let mut account = AccountStruct {
             id: 0,
             email: "test@test.com".to_string(),
         };
         // create account is also tested now so we use it in this test
-        (&pool).create(&mut account).await?;
-        (&pool).delete(account).await?;
+        repo.create(&mut account).await?;
+        repo.delete(account).await?;
 
         // ditto
-        let accounts: Vec<AccountStruct> = (&pool).read_all().await?;
+        let accounts: Vec<AccountStruct> = repo.read_all().await?;
         assert_eq!(accounts.len(), 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_works() -> Result<()> {
+        let docker = clients::Cli::default();
+        let (_container, connection_string) = create_mock_database(&docker).await?;
+
+        let pool = connect_and_run_migration(connection_string, "acmon").await?;
+        let mut repo = RepoWrapper::from(&pool);
+
+        let mut expected = AccountStruct {
+            id: 0,
+            email: "test@test.com".to_string(),
+        };
+        repo.create(&mut expected).await?;
+
+        expected.email = "newtest@test.com".to_string();
+        repo.update(&expected).await?;
+
+        let actual: AccountStruct = repo
+            .read(expected.id)
+            .await?
+            .ok_or_else(|| anyhow!("not found"))?;
+
+        assert_eq!(expected, actual);
 
         Ok(())
     }

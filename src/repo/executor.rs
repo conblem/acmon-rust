@@ -1,13 +1,13 @@
-use sqlx::PgExecutor;
+use sqlx::{Database, Executor};
 
-pub(super) trait IsExecutor<'b> {
-    type Bound: PgExecutor<'b>;
+pub(super) trait IsExecutor<'b, DB: Database> {
+    type Bound: Executor<'b, Database = DB>;
     fn coerce(&'b mut self) -> Self::Bound;
 }
 
-impl<'a, 'b, R: 'b> IsExecutor<'b> for &'a R
+impl<'a, 'b, R: 'b, DB: Database> IsExecutor<'b, DB> for &'a R
 where
-    &'b R: PgExecutor<'b>,
+    &'b R: Executor<'b, Database = DB>,
 {
     type Bound = &'b R;
     fn coerce(&'b mut self) -> Self::Bound {
@@ -15,9 +15,9 @@ where
     }
 }
 
-impl<'a, 'b, M: 'b> IsExecutor<'b> for &'a mut M
+impl<'a, 'b, M: 'b, DB: Database> IsExecutor<'b, DB> for &'a mut M
 where
-    &'b mut M: PgExecutor<'b>,
+    &'b mut M: Executor<'b, Database = DB>,
 {
     type Bound = &'b mut M;
     fn coerce(&'b mut self) -> Self::Bound {
@@ -28,7 +28,7 @@ where
 #[cfg(all(test, feature = "container"))]
 mod tests {
     use sqlx::postgres::PgRow;
-    use sqlx::{PgPool, Row};
+    use sqlx::{PgPool, Postgres, Row};
     use testcontainers::{clients, images, Docker};
 
     use super::*;
@@ -57,7 +57,7 @@ mod tests {
 
     async fn execute<T>(mut executor: T)
     where
-        for<'b> T: IsExecutor<'b>,
+        for<'b> T: IsExecutor<'b, Postgres>,
     {
         let res = sqlx::query("select 1 + 1")
             .try_map(|row: PgRow| row.try_get::<i32, _>(0))
