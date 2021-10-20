@@ -33,7 +33,17 @@ where
 {
     type Error = sqlx::Error;
 
-    async fn get_accounts(&mut self) -> Result<Vec<Account>, Self::Error> {
+    // todo: write test for this
+    async fn fetch_account(&mut self, id: i32) -> Result<Option<Account>, Self::Error> {
+        let account = sqlx::query_as::<_, PgAccount>("SELECT * FROM account where id = $1 LIMIT 1")
+            .bind(id)
+            .fetch_optional(self.coerce())
+            .await?;
+
+        Ok(account.map(Into::into))
+    }
+
+    async fn fetch_accounts(&mut self) -> Result<Vec<Account>, Self::Error> {
         sqlx::query_as::<_, PgAccount>("SELECT * FROM account")
             .fetch(self.coerce())
             .map_ok(Account::from)
@@ -170,7 +180,7 @@ mod tests {
 
         let pool = connect_and_run_migration(connection_string, "acmon").await?;
 
-        let accounts = (&pool).get_accounts().await?;
+        let accounts = (&pool).fetch_accounts().await?;
         assert_eq!(accounts.len(), 0);
 
         // insert example row for test
@@ -178,7 +188,7 @@ mod tests {
             .execute("INSERT INTO account (email) VALUES ('test@test.com')")
             .await?;
 
-        let accounts = (&pool).get_accounts().await?;
+        let accounts = (&pool).fetch_accounts().await?;
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].email, "test@test.com");
 
@@ -203,7 +213,7 @@ mod tests {
 
         // we get the accounts using the pool method which is tested
         // that's why we can now use it in a test
-        let accounts = (&pool).get_accounts().await?;
+        let accounts = (&pool).fetch_accounts().await?;
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].id, 1);
         assert_eq!(accounts[0].email, "test@test.com");
@@ -227,7 +237,7 @@ mod tests {
         (&pool).delete_account(account).await?;
 
         // ditto
-        let accounts = (&pool).get_accounts().await?;
+        let accounts = (&pool).fetch_accounts().await?;
         assert_eq!(accounts.len(), 0);
 
         Ok(())

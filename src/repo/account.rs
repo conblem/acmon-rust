@@ -10,7 +10,8 @@ pub(super) struct Account {
 pub(super) trait AccountRepo {
     type Error: Error + 'static;
 
-    async fn get_accounts(&mut self) -> Result<Vec<Account>, Self::Error>;
+    async fn fetch_account(&mut self, id: i32) -> Result<Option<Account>, Self::Error>;
+    async fn fetch_accounts(&mut self) -> Result<Vec<Account>, Self::Error>;
     async fn create_account(&mut self, account: &mut Account) -> Result<(), Self::Error>;
     async fn update_account(&mut self, account: &Account) -> Result<(), Self::Error>;
     async fn delete_account(&mut self, account: Account) -> Result<(), Self::Error>;
