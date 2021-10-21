@@ -1,13 +1,14 @@
-use sqlx::PgExecutor;
+use sqlx::database::HasArguments;
+use sqlx::Executor;
 
-pub(super) trait IsExecutor<'b> {
-    type Bound: PgExecutor<'b>;
+pub(super) trait IsExecutor<'b, DB> {
+    type Bound: Executor<'b, Database = DB>;
     fn coerce(&'b mut self) -> Self::Bound;
 }
 
-impl<'a, 'b, R: 'b> IsExecutor<'b> for &'a R
+impl<'a, 'b, R: 'b, DB> IsExecutor<'b, DB> for &'a R
 where
-    &'b R: PgExecutor<'b>,
+    &'b R: Executor<'b, Database = DB>,
 {
     type Bound = &'b R;
     fn coerce(&'b mut self) -> Self::Bound {
@@ -15,9 +16,9 @@ where
     }
 }
 
-impl<'a, 'b, M: 'b> IsExecutor<'b> for &'a mut M
+impl<'a, 'b, M: 'b, DB> IsExecutor<'b, DB> for &'a mut M
 where
-    &'b mut M: PgExecutor<'b>,
+    &'b mut M: Executor<'b, Database = DB>,
 {
     type Bound = &'b mut M;
     fn coerce(&'b mut self) -> Self::Bound {
@@ -27,11 +28,11 @@ where
 
 #[cfg(all(test, feature = "container"))]
 mod tests {
-    use sqlx::postgres::PgRow;
-    use sqlx::{PgPool, Row};
+    use sqlx::{ColumnIndex, Database, IntoArguments, PgPool, Row, Type};
     use testcontainers::{clients, images, Docker};
 
     use super::*;
+    use sqlx::decode::Decode;
 
     #[tokio::test]
     async fn test() {
@@ -55,19 +56,23 @@ mod tests {
         execute(&mut transaction).await;
     }
 
-    async fn execute<T>(mut executor: T)
+    async fn execute<T, DB: Database>(mut executor: T)
     where
-        for<'b> T: IsExecutor<'b>,
+        for<'b> T: IsExecutor<'b, DB>,
+        for<'b> i32: Decode<'b, DB>,
+        for<'b> <DB as HasArguments<'static>>::Arguments: IntoArguments<'b, DB>,
+        i32: Type<DB>,
+        usize: ColumnIndex<DB::Row>,
     {
         let res = sqlx::query("select 1 + 1")
-            .try_map(|row: PgRow| row.try_get::<i32, _>(0))
+            .try_map(|row: DB::Row| row.try_get::<i32, _>(0))
             .fetch_one(executor.coerce())
             .await
             .unwrap();
         assert_eq!(2, res);
 
         let res = sqlx::query("select 2 + 2")
-            .try_map(|row: PgRow| row.try_get::<i32, _>(0))
+            .try_map(|row: DB::Row| row.try_get::<i32, _>(0))
             .fetch_one(executor.coerce())
             .await
             .unwrap();

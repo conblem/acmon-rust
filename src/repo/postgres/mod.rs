@@ -3,7 +3,7 @@ use futures_util::FutureExt;
 use sea_query::{Expr, Iden, PostgresQueryBuilder, Query, Value};
 use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgPoolOptions, PgRow};
-use sqlx::{FromRow, PgPool};
+use sqlx::{FromRow, PgPool, Postgres};
 use std::fmt::Display;
 use std::sync::Arc;
 
@@ -67,7 +67,7 @@ impl Entity for AccountStruct {
 #[async_trait]
 impl<E: Entity, T: Send> Repo<E> for T
 where
-    for<'b> T: IsExecutor<'b>,
+    for<'b> T: IsExecutor<'b, Postgres>,
 {
     type Error = sqlx::Error;
 
