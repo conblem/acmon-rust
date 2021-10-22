@@ -1,17 +1,14 @@
 use async_trait::async_trait;
 use futures_util::FutureExt;
-use sea_query::{Expr, Iden, PostgresQueryBuilder, Query, Value};
+use sea_query::{Expr, Iden, Query, Value};
 use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{FromRow, PgPool, Postgres};
 use std::fmt::Display;
 use std::sync::Arc;
 
-sea_query::sea_query_driver_postgres!();
-use sea_query_driver_postgres::{bind_query, bind_query_as};
-
 use super::account::{AccountStruct, Repo};
-use super::executor::IsExecutor;
+use super::executor::{IsExecutor, IsQueryBuilder};
 
 static MIGRATOR: Migrator = sqlx::migrate!();
 
@@ -71,7 +68,6 @@ where
 {
     type Error = sqlx::Error;
 
-    // todo: write test for this
     async fn read(&mut self, id: i32) -> Result<Option<E>, Self::Error> {
         let table = E::table_iden();
         let id_iden = E::id_iden();
@@ -83,9 +79,10 @@ where
             .from(table)
             .and_where(Expr::col(id_iden).eq(id))
             .limit(1)
-            .build(PostgresQueryBuilder);
+            .build(Postgres::query_builder());
 
-        bind_query_as(sqlx::query_as(&sql), &values)
+        let query = sqlx::query_as(&sql);
+        Postgres::bind_query_as(query, &values)
             .fetch_optional(self.coerce())
             .await
     }
@@ -99,9 +96,10 @@ where
             .column(id_iden)
             .columns(columns_iden)
             .from(table)
-            .build(PostgresQueryBuilder);
+            .build(Postgres::query_builder());
 
-        bind_query_as(sqlx::query_as(&sql), &values)
+        let query = sqlx::query_as(&sql);
+        Postgres::bind_query_as(query, &values)
             .fetch_all(self.coerce())
             .await
     }
@@ -117,9 +115,10 @@ where
             .columns(columns)
             .values_panic(values)
             .returning_col(id_iden)
-            .build(PostgresQueryBuilder);
+            .build(Postgres::query_builder());
 
-        let (id,) = bind_query_as(sqlx::query_as(&sql), &values)
+        let query = sqlx::query_as(&sql);
+        let (id,) = Postgres::bind_query_as(query, &values)
             .fetch_one(self.coerce())
             .await?;
 
@@ -137,9 +136,9 @@ where
             .table(table)
             .values(values)
             .and_where(Expr::col(id_iden).eq(account.id()))
-            .build(PostgresQueryBuilder);
+            .build(Postgres::query_builder());
 
-        bind_query(sqlx::query(&sql), &values)
+        Postgres::bind_query(&sql, &values)
             .execute(self.coerce())
             .await?;
 
@@ -153,9 +152,9 @@ where
         let (sql, values) = Query::delete()
             .from_table(table)
             .and_where(Expr::col(id_iden).eq(account.id()))
-            .build(PostgresQueryBuilder);
+            .build(Postgres::query_builder());
 
-        bind_query(sqlx::query(&sql), &values)
+        Postgres::bind_query(&sql, &values)
             .execute(self.coerce())
             .await?;
 

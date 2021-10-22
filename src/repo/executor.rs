@@ -1,5 +1,6 @@
+use sea_query::{PostgresQueryBuilder, QueryBuilder, Values};
 use sqlx::database::HasArguments;
-use sqlx::Executor;
+use sqlx::{Database, Executor, Postgres};
 
 pub(super) trait IsExecutor<'b, DB> {
     type Bound: Executor<'b, Database = DB>;
@@ -23,6 +24,42 @@ where
     type Bound = &'b mut M;
     fn coerce(&'b mut self) -> Self::Bound {
         self
+    }
+}
+
+type Query<'a, DB> = sqlx::query::Query<'a, DB, <DB as HasArguments<'a>>::Arguments>;
+type QueryAs<'a, DB, T> = sqlx::query::QueryAs<'a, DB, T, <DB as HasArguments<'a>>::Arguments>;
+
+pub(super) trait IsQueryBuilder: Database {
+    type QueryBuilder: QueryBuilder;
+    fn query_builder() -> Self::QueryBuilder;
+
+    fn bind_query<'a>(sql: &'a str, params: &'a Values) -> Query<'a, Self>;
+    fn bind_query_as<'a, T>(
+        query: QueryAs<'a, Self, T>,
+        params: &'a Values,
+    ) -> QueryAs<'a, Self, T>;
+}
+
+sea_query::sea_query_driver_postgres!();
+
+impl IsQueryBuilder for Postgres {
+    type QueryBuilder = PostgresQueryBuilder;
+
+    fn query_builder() -> Self::QueryBuilder {
+        PostgresQueryBuilder
+    }
+
+    fn bind_query<'a>(sql: &'a str, params: &'a Values) -> Query<'a, Self> {
+        let query = sqlx::query(sql);
+        sea_query_driver_postgres::bind_query(query, params)
+    }
+
+    fn bind_query_as<'a, T>(
+        query: QueryAs<'a, Self, T>,
+        params: &'a Values,
+    ) -> QueryAs<'a, Self, T> {
+        sea_query_driver_postgres::bind_query_as(query, params)
     }
 }
 
@@ -59,8 +96,8 @@ mod tests {
     async fn execute<T, DB: Database>(mut executor: T)
     where
         for<'b> T: IsExecutor<'b, DB>,
-        for<'b> i32: Decode<'b, DB>,
         for<'b> <DB as HasArguments<'static>>::Arguments: IntoArguments<'b, DB>,
+        for<'b> i32: Decode<'b, DB>,
         i32: Type<DB>,
         usize: ColumnIndex<DB::Row>,
     {
