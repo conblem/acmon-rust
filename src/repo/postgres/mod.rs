@@ -61,6 +61,7 @@ impl Entity for AccountStruct {
     }
 }
 
+// can easily be abstracted for even the Database in the future
 #[async_trait]
 impl<E: Entity, T: Send> Repo<E> for T
 where
