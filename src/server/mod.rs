@@ -29,6 +29,8 @@ pub(crate) trait AcmeServer: Send + Sync {
         &self,
         req: SignedRequest<(), S>,
     ) -> Result<(), Self::Error>;
+
+    async fn finalize(&self) -> Result<(), Self::Error>;
 }
 
 pub(crate) trait Connect: HyperConnect + Clone + Debug + Send + Sync + 'static {}

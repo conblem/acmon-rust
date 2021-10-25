@@ -122,6 +122,10 @@ impl<C: Connect> AcmeServer for DirectAcmeServer<C> {
 
         Ok(())
     }
+
+    async fn finalize(&self) -> Result<(), Self::Error> {
+        todo!()
+    }
 }
 
 #[cfg(test)]
@@ -147,6 +151,15 @@ mod tests {
         })
     }
 
+    #[test]
+    fn endpoint_should_return_correct_url() {
+        assert_eq!("https://acme-v02.api.letsencrypt.org/directory", Endpoint::LetsEncrypt.to_str());
+        assert_eq!("https://acme-staging-v02.api.letsencrypt.org/directory", Endpoint::LetsEncryptStaging.to_str());
+
+        let endpoint = Endpoint::Url("https://test.com".to_string());
+        assert_eq!("https://test.com", endpoint.to_str())
+    }
+
     #[tokio::test]
     async fn builder_works() -> Result<()> {
         let mock_server = MockServer::start().await;
@@ -167,7 +180,7 @@ mod tests {
 
         let server = DirectAcmeServer::builder()
             .connector(HttpConnector::new())
-            .url(format!("{}/directory", &base))
+            .url(format!("{}/directory", base))
             .build()
             .await?;
 

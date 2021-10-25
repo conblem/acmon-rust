@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use sqlx::FromRow;
 use std::error::Error;
 
-#[derive(FromRow)]
+#[derive(FromRow, Eq, PartialEq, Debug)]
 pub(super) struct AccountStruct {
     pub(super) id: i32,
     pub(super) email: String,

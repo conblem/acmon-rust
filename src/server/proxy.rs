@@ -9,9 +9,10 @@ use warp::hyper::client::HttpConnector;
 use super::direct::{DirectAcmeServer, DirectAcmeServerBuilder};
 use super::{AcmeServer, AcmeServerBuilder, SignedRequest};
 
-pub(crate) struct ProxyAcmeServerBuilder<B = DirectAcmeServerBuilder<HttpsConnector<HttpConnector>>>(
-    B,
-);
+pub(crate) struct ProxyAcmeServerBuilder<B = DirectAcmeServerBuilder<HttpsConnector<HttpConnector>>>
+{
+    inner: B,
+}
 
 #[async_trait]
 impl<A: AcmeServer<Builder = B>, B: AcmeServerBuilder<Server = A>> AcmeServerBuilder
@@ -20,7 +21,7 @@ impl<A: AcmeServer<Builder = B>, B: AcmeServerBuilder<Server = A>> AcmeServerBui
     type Server = ProxyAcmeServer<A, B>;
 
     async fn build(&mut self) -> Result<Self::Server, <Self::Server as AcmeServer>::Error> {
-        let inner = self.0.build().await;
+        let inner = self.inner.build().await;
         let inner = inner.map_err(Into::into)?;
 
         Ok(ProxyAcmeServer {
@@ -30,11 +31,11 @@ impl<A: AcmeServer<Builder = B>, B: AcmeServerBuilder<Server = A>> AcmeServerBui
     }
 }
 
-impl<A: AcmeServer<Builder = B>, B: AcmeServerBuilder<Server = A> + Default> Default
-    for ProxyAcmeServerBuilder<B>
-{
+impl<B: Default> Default for ProxyAcmeServerBuilder<B> {
     fn default() -> Self {
-        ProxyAcmeServerBuilder(B::default())
+        Self {
+            inner: B::default(),
+        }
     }
 }
 
@@ -42,13 +43,13 @@ impl<B> Deref for ProxyAcmeServerBuilder<B> {
     type Target = B;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.inner
     }
 }
 
 impl<B> DerefMut for ProxyAcmeServerBuilder<B> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        &mut self.inner
     }
 }
 
@@ -62,10 +63,10 @@ pub(crate) struct ProxyAcmeServer<
 
 impl ProxyAcmeServer {
     pub(crate) fn builder() -> ProxyAcmeServerBuilder {
-        let mut builder = DirectAcmeServerBuilder::default();
-        builder.connector(HttpsConnector::with_webpki_roots());
+        let mut inner = DirectAcmeServerBuilder::default();
+        inner.connector(HttpsConnector::with_webpki_roots());
 
-        ProxyAcmeServerBuilder(builder)
+        ProxyAcmeServerBuilder { inner }
     }
 }
 
@@ -91,5 +92,12 @@ impl<A: AcmeServer<Builder = B>, B: AcmeServerBuilder<Server = A>> AcmeServer
         let account = account.map_err(Into::into)?;
 
         Ok(account)
+    }
+
+    async fn finalize(&self) -> Result<(), Self::Error> {
+        let res = self.inner.finalize().await;
+        let res = res.map_err(Into::into)?;
+
+        Ok(res)
     }
 }

@@ -254,7 +254,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_accounts_works() -> Result<()> {
+    async fn read_all_works() -> Result<()> {
         let docker = clients::Cli::default();
         let (_container, connection_string) = create_mock_database(&docker).await?;
 
@@ -276,7 +276,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_account_works() -> Result<()> {
+    async fn read_works() -> Result<()> {
+        let docker = clients::Cli::default();
+        let (_container, connection_string) = create_mock_database(&docker).await?;
+
+        let pool = connect_and_run_migration(connection_string, "acmon").await?;
+
+        let accounts: Vec<AccountStruct> = (&pool).read_all().await?;
+        assert_eq!(accounts.len(), 0);
+
+        // insert example row for test
+        pool.execute("INSERT INTO account (email) VALUES ('test@test.com')")
+            .await?;
+
+        let accounts: Vec<AccountStruct> = (&pool).read_all().await?;
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].email, "test@test.com");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_works() -> Result<()> {
         let docker = clients::Cli::default();
         let (_container, connection_string) = create_mock_database(&docker).await?;
 
@@ -302,7 +323,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_account_works() -> Result<()> {
+    async fn delete_works() -> Result<()> {
         let docker = clients::Cli::default();
         let (_container, connection_string) = create_mock_database(&docker).await?;
 
@@ -319,6 +340,32 @@ mod tests {
         // ditto
         let accounts: Vec<AccountStruct> = (&pool).read_all().await?;
         assert_eq!(accounts.len(), 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_works() -> Result<()> {
+        let docker = clients::Cli::default();
+        let (_container, connection_string) = create_mock_database(&docker).await?;
+
+        let pool = connect_and_run_migration(connection_string, "acmon").await?;
+
+        let mut expected = AccountStruct {
+            id: 0,
+            email: "test@test.com".to_string(),
+        };
+        (&pool).create(&mut expected).await?;
+
+        expected.email = "newtest@test.com".to_string();
+        (&pool).update(&expected).await?;
+
+        let actual: AccountStruct = (&pool)
+            .read(expected.id)
+            .await?
+            .ok_or_else(|| anyhow!("not found"))?;
+
+        assert_eq!(expected, actual);
 
         Ok(())
     }
