@@ -1,31 +1,63 @@
-use anyhow::{anyhow, Result};
-use tokio::runtime::Runtime;
-use tracing::{instrument, Instrument};
+use acme_core::{AcmeServer, ApiDirectory};
+use axum::http::header::CONTENT_TYPE;
+use axum::http::{HeaderValue, Request, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{middleware, Extension, Json, Router};
+use std::error::Error;
 
-use config::Config;
-use server::{AcmeServer, AcmeServerBuilder, ApiDirectory, ProxyAcmeServer};
+#[tokio::main]
+async fn main() {
+    println!("Hello, world!");
+}
 
-mod config;
-mod http;
-mod repo;
-mod server;
+struct AcmeServerServer<T> {
+    inner: T,
+}
 
-#[instrument]
-fn main() -> Result<()> {
-    match tracing_subscriber::fmt::try_init() {
-        Err(e) => return Err(anyhow!(e)),
-        Ok(()) => {}
+impl<T: AcmeServer + Clone + 'static> AcmeServerServer<T> {
+    async fn run(self) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+        let assert_jose = middleware::from_fn(assert_jose);
+
+        let app = Router::new()
+            .route("/directory", get(Self::directory))
+            .route("/new-account", post(Self::new_account).layer(assert_jose))
+            .layer(Extension(self.inner));
+
+        axum::Server::bind(&"0.0.0.0:3000".parse().unwrap())
+            .serve(app.into_make_service())
+            .await
+            .unwrap();
+
+        Err("hallo".into())
+    }
+
+    // this is wrong we need to build our custom api directory
+    async fn directory(Extension(server): Extension<T>) -> Response {
+        Json(server.directory()).into_response()
+    }
+
+    async fn new_account(Extension(server): Extension<T>) -> Response {
+        todo!()
+        server.new_account()
+    }
+}
+
+async fn assert_jose<B>(mut req: Request<B>, next: Next<B>) -> Result<Response, StatusCode> {
+    static APPLICATION_JOSE_JSON: HeaderValue = HeaderValue::from_static("application/jose+json");
+
+    let header = req.headers().get(CONTENT_TYPE);
+
+    let header = match header {
+        // todo: improve this error
+        None => return Err(StatusCode::BAD_REQUEST),
+        Some(header) => header,
     };
 
-    let config = config::load_config()?;
-    let runtime = Runtime::new()?;
+    if header != APPLICATION_JOSE_JSON {
+        return Err(StatusCode::BAD_REQUEST);
+    }
 
-    let block = async move {
-        let acme_server = ProxyAcmeServer::builder().le_staging().build().await?;
-
-        let http_server = http::run(&config, acme_server);
-        tokio::spawn(http_server).await?
-    };
-
-    runtime.block_on(block.in_current_span())
+    Ok(next.run(req).await)
 }
