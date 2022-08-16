@@ -10,3 +10,5 @@ acme_core = {git = "https://github.com/conblem/async-acme"}
 async-trait = "0.1"
 axum = { version = "0.5"}
 tokio = { version = "1", features = ["full"]}
+base64 = "0.13"
+serde = { version = "1", features = [] }

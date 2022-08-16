@@ -6,6 +6,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{middleware, Extension, Json, Router};
 use std::error::Error;
+use std::fmt::Formatter;
+use std::marker::PhantomData;
+use serde::{Deserialize, Deserializer};
+use serde::de::{EnumAccess, MapAccess, SeqAccess, Visitor};
 
 #[tokio::main]
 async fn main() {
@@ -40,8 +44,38 @@ impl<T: AcmeServer + Clone + 'static> AcmeServerServer<T> {
 
     async fn new_account(Extension(server): Extension<T>) -> Response {
         todo!()
-        server.new_account()
     }
+}
+
+struct SignedRequest<T> {
+    payload: T,
+    nonce: String,
+    protected: Protected
+}
+
+impl <'de, T: Deserialize<'de>> Deserialize<'de> for SignedRequest<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: Deserializer<'de> {
+        struct SignedRequestVisitor<T>(PhantomData<T>);
+        impl <'de, T> Visitor<'de> for SignedRequestVisitor<T> {
+            type Value = (T, String, Protected);
+
+            fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
+                write!(formatter, "a signed request")
+            }
+
+            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error> where A: MapAccess<'de> {
+                let payload
+                todo!()
+                map.next_entry()
+            }
+        }
+
+        deserializer.deserialize_struct("SignedRequest", &["payload", "nonce", "protected"], SignedRequestVisitor(PhantomData))
+    }
+}
+
+struct Protected {
+
 }
 
 async fn assert_jose<B>(mut req: Request<B>, next: Next<B>) -> Result<Response, StatusCode> {
