@@ -1,15 +1,15 @@
-use acme_core::{AcmeServer, ApiDirectory};
+use acme_core::{AcmeServer, ApiAccount};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderValue, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{middleware, Extension, Json, Router};
+use serde::de::{Error as DeError, IntoDeserializer, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 use std::error::Error;
 use std::fmt::Formatter;
 use std::marker::PhantomData;
-use serde::{Deserialize, Deserializer};
-use serde::de::{EnumAccess, MapAccess, SeqAccess, Visitor};
 
 #[tokio::main]
 async fn main() {
@@ -42,43 +42,79 @@ impl<T: AcmeServer + Clone + 'static> AcmeServerServer<T> {
         Json(server.directory()).into_response()
     }
 
-    async fn new_account(Extension(server): Extension<T>) -> Response {
+    async fn new_account(
+        Json(account): Json<SignedRequest<ApiAccount<()>>>,
+        Extension(server): Extension<T>,
+    ) -> Response {
+        println!("{:?}", account.payload);
         todo!()
     }
 }
 
 struct SignedRequest<T> {
     payload: T,
-    nonce: String,
-    protected: Protected
+    signature: Vec<u8>,
+    protected: Protected,
 }
 
-impl <'de, T: Deserialize<'de>> Deserialize<'de> for SignedRequest<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> where D: Deserializer<'de> {
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for SignedRequest<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
         struct SignedRequestVisitor<T>(PhantomData<T>);
-        impl <'de, T> Visitor<'de> for SignedRequestVisitor<T> {
-            type Value = (T, String, Protected);
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for SignedRequestVisitor<T> {
+            type Value = SignedRequest<T>;
 
             fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
                 write!(formatter, "a signed request")
             }
 
-            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error> where A: MapAccess<'de> {
-                let payload
-                todo!()
-                map.next_entry()
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut payload = None;
+                let mut signature = None;
+                let mut protected = None;
+
+                while let Some((key, val)) = map.next_entry::<&str, &[u8]>()? {
+                    let val = base64::decode_config(val, base64::URL_SAFE_NO_PAD)
+                        .map_err(A::Error::custom)?;
+
+                    match key {
+                        "payload" => payload = Some(T::deserialize(val.into_deserializer())?),
+                        "signature" => signature = Some(val),
+                        "protected" => {
+                            protected = Some(Protected::deserialize(val.into_deserializer())?)
+                        }
+                        _ => {}
+                    }
+                }
+
+                match (payload, signature, protected) {
+                    (Some(payload), Some(signature), Some(protected)) => Ok(SignedRequest {
+                        payload,
+                        signature,
+                        protected,
+                    }),
+                    _ => Err(DeError::missing_field("payload, signature, protected")),
+                }
             }
         }
 
-        deserializer.deserialize_struct("SignedRequest", &["payload", "nonce", "protected"], SignedRequestVisitor(PhantomData))
+        deserializer.deserialize_struct(
+            "SignedRequest",
+            &["payload", "signature", "protected"],
+            SignedRequestVisitor(PhantomData),
+        )
     }
 }
 
-struct Protected {
+#[derive(Deserialize)]
+struct Protected {}
 
-}
-
-async fn assert_jose<B>(mut req: Request<B>, next: Next<B>) -> Result<Response, StatusCode> {
+async fn assert_jose<B>(req: Request<B>, next: Next<B>) -> Result<Response, StatusCode> {
     static APPLICATION_JOSE_JSON: HeaderValue = HeaderValue::from_static("application/jose+json");
 
     let header = req.headers().get(CONTENT_TYPE);
@@ -94,4 +130,18 @@ async fn assert_jose<B>(mut req: Request<B>, next: Next<B>) -> Result<Response, 
     }
 
     Ok(next.run(req).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use async_acme::Directory;
+    #[tokio::test]
+    async fn test() {
+        let directory = Directory::builder()
+            .default()
+            .le_staging()
+            .build()
+            .await
+            .unwrap();
+    }
 }
