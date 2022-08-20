@@ -1,15 +1,17 @@
-use acme_core::{AcmeServer, ApiAccount};
-use axum::http::header::CONTENT_TYPE;
+use acme_core::{AcmeServer, ApiAccount, ApiDirectory};
+use axum::http::header::{HeaderName, CACHE_CONTROL, CONTENT_TYPE};
+use axum::http::uri::InvalidUri;
 use axum::http::{HeaderValue, Request, StatusCode};
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::response::{AppendHeaders, IntoResponse, Response};
+use axum::routing::{get, head, post};
 use axum::{middleware, Extension, Json, Router};
 use serde::de::{Error as DeError, IntoDeserializer, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::error::Error;
 use std::fmt::Formatter;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
@@ -23,13 +25,18 @@ struct AcmeServerServer<T> {
 impl<T: AcmeServer + Clone + 'static> AcmeServerServer<T> {
     async fn run(self) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
         let assert_jose = middleware::from_fn(assert_jose);
+        let directory_extension = Self::create_directory("127.0.0.1:3000").unwrap();
 
         let app = Router::new()
-            .route("/directory", get(Self::directory))
+            .route(
+                "/directory",
+                get(Self::directory).layer(directory_extension),
+            )
             .route("/new-account", post(Self::new_account).layer(assert_jose))
+            .route("/new-nonce", head(Self::new_nonce))
             .layer(Extension(self.inner));
 
-        axum::Server::bind(&"0.0.0.0:3000".parse().unwrap())
+        axum::Server::bind(&"127.0.0.1:3000".parse().unwrap())
             .serve(app.into_make_service())
             .await
             .unwrap();
@@ -37,9 +44,23 @@ impl<T: AcmeServer + Clone + 'static> AcmeServerServer<T> {
         Err("hallo".into())
     }
 
+    fn create_directory(addr: &'static str) -> Result<Extension<Arc<ApiDirectory>>, InvalidUri> {
+        let directory = ApiDirectory {
+            new_nonce: format!("http://{}/new-nonce", addr).try_into()?,
+            new_account: format!("http://{}/new-account", addr).try_into()?,
+            new_order: format!("http://{}/new-order", addr).try_into()?,
+            new_authz: None,
+            revoke_cert: format!("http://{}/revoke-cert", addr).try_into()?,
+            key_change: format!("http://{}/key-change", addr).try_into()?,
+            meta: None,
+        };
+
+        Ok(Extension(Arc::new(directory)))
+    }
+
     // this is wrong we need to build our custom api directory
-    async fn directory(Extension(server): Extension<T>) -> Response {
-        Json(server.directory()).into_response()
+    async fn directory(Extension(directory): Extension<Arc<ApiDirectory>>) -> Response {
+        Json(&*directory).into_response()
     }
 
     async fn new_account(
@@ -48,6 +69,18 @@ impl<T: AcmeServer + Clone + 'static> AcmeServerServer<T> {
     ) -> Response {
         println!("{:?}", account.payload);
         todo!()
+    }
+
+    async fn new_nonce(Extension(server): Extension<T>) -> impl IntoResponse {
+        // todo: remove unwrap;
+        let nonce = server.new_nonce().await.unwrap();
+        AppendHeaders([
+            (CACHE_CONTROL, HeaderValue::from_static("no-store")),
+            (
+                HeaderName::from_static("replay-nonce"),
+                HeaderValue::from_str(&nonce).unwrap(),
+            ),
+        ])
     }
 }
 
@@ -143,7 +176,7 @@ mod tests {
     async fn test() {
         let connector = HttpsConnectorBuilder::new()
             .with_webpki_roots()
-            .https_only()
+            .https_or_http()
             .enable_http1()
             .build();
 
@@ -154,18 +187,23 @@ mod tests {
             .await
             .unwrap();
 
+        let mut local_server = HyperAcmeServer::builder();
+        local_server.connector(connector);
+
         tokio::spawn(async {
             let server = AcmeServerServer { inner: le_staging };
             server.run().await.unwrap();
         });
 
         let directory = Directory::builder()
-            .default()
+            .server(local_server)
             .url("http://localhost:3000/directory")
             .build()
             .await
             .unwrap();
 
-        println!("{:?}", directory);
+        let account = directory.new_account("test@mail.com").await.unwrap();
+
+        println!("{:?}", account);
     }
 }
