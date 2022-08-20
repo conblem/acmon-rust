@@ -15,3 +15,4 @@ serde = { version = "1", features = [] }
 
 [dev-dependencies]
 async_acme = {git = "https://github.com/conblem/async-acme"}
+hyper-rustls = { version = "0.23", default-features = false, features = ["webpki-tokio", "http1"] }

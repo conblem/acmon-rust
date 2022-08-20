@@ -44,7 +44,7 @@ impl<T: AcmeServer + Clone + 'static> AcmeServerServer<T> {
 
     async fn new_account(
         Json(account): Json<SignedRequest<ApiAccount<()>>>,
-        Extension(server): Extension<T>,
+        Extension(_server): Extension<T>,
     ) -> Response {
         println!("{:?}", account.payload);
         todo!()
@@ -134,14 +134,38 @@ async fn assert_jose<B>(req: Request<B>, next: Next<B>) -> Result<Response, Stat
 
 #[cfg(test)]
 mod tests {
-    use async_acme::Directory;
+    use crate::AcmeServerServer;
+    use acme_core::{AcmeServerBuilder, AcmeServerExt};
+    use async_acme::{Directory, HyperAcmeServer};
+    use hyper_rustls::HttpsConnectorBuilder;
+
     #[tokio::test]
     async fn test() {
-        let directory = Directory::builder()
-            .default()
+        let connector = HttpsConnectorBuilder::new()
+            .with_webpki_roots()
+            .https_only()
+            .enable_http1()
+            .build();
+
+        let le_staging = HyperAcmeServer::builder()
+            .connector(connector.clone())
             .le_staging()
             .build()
             .await
             .unwrap();
+
+        tokio::spawn(async {
+            let server = AcmeServerServer { inner: le_staging };
+            server.run().await.unwrap();
+        });
+
+        let directory = Directory::builder()
+            .default()
+            .url("http://localhost:3000/directory")
+            .build()
+            .await
+            .unwrap();
+
+        println!("{:?}", directory);
     }
 }
