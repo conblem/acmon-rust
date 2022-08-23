@@ -6,7 +6,7 @@ use axum::middleware::Next;
 use axum::response::{AppendHeaders, IntoResponse, Response};
 use axum::routing::{get, head, post};
 use axum::{middleware, Extension, Json, Router};
-use serde::de::{Error as DeError, MapAccess, Visitor};
+use serde::de::{DeserializeOwned, Error as DeError, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::error::Error;
 use std::fmt::Formatter;
@@ -89,19 +89,13 @@ struct SignedRequest<T> {
     signature: Vec<u8>,
 }
 
-impl<'de, T> Deserialize<'de> for SignedRequest<T>
-where
-    for<'a> T: Deserialize<'a>,
-{
+impl<'de, T: DeserializeOwned> Deserialize<'de> for SignedRequest<T> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         struct SignedRequestVisitor<T>(PhantomData<T>);
-        impl<'de, T> Visitor<'de> for SignedRequestVisitor<T>
-        where
-            for<'a> T: Deserialize<'a>,
-        {
+        impl<'de, T: DeserializeOwned> Visitor<'de> for SignedRequestVisitor<T> {
             type Value = SignedRequest<T>;
 
             fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
