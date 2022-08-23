@@ -6,7 +6,7 @@ use axum::middleware::Next;
 use axum::response::{AppendHeaders, IntoResponse, Response};
 use axum::routing::{get, head, post};
 use axum::{middleware, Extension, Json, Router};
-use serde::de::{Error as DeError, IntoDeserializer, MapAccess, Visitor};
+use serde::de::{Error as DeError, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::error::Error;
 use std::fmt::Formatter;
@@ -65,10 +65,10 @@ impl<T: AcmeServer + Clone + 'static> AcmeServerServer<T> {
 
     async fn new_account(
         Json(account): Json<SignedRequest<ApiAccount<()>>>,
-        Extension(_server): Extension<T>,
-    ) -> Response {
+        Extension(server): Extension<T>,
+    ) -> StatusCode {
         println!("{:?}", account.payload);
-        todo!()
+        StatusCode::OK
     }
 
     async fn new_nonce(Extension(server): Extension<T>) -> impl IntoResponse {
@@ -87,16 +87,21 @@ impl<T: AcmeServer + Clone + 'static> AcmeServerServer<T> {
 struct SignedRequest<T> {
     payload: T,
     signature: Vec<u8>,
-    protected: Protected,
 }
 
-impl<'de, T: Deserialize<'de>> Deserialize<'de> for SignedRequest<T> {
+impl<'de, T> Deserialize<'de> for SignedRequest<T>
+where
+    for<'a> T: Deserialize<'a>,
+{
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         struct SignedRequestVisitor<T>(PhantomData<T>);
-        impl<'de, T: Deserialize<'de>> Visitor<'de> for SignedRequestVisitor<T> {
+        impl<'de, T> Visitor<'de> for SignedRequestVisitor<T>
+        where
+            for<'a> T: Deserialize<'a>,
+        {
             type Value = SignedRequest<T>;
 
             fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
@@ -109,28 +114,22 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for SignedRequest<T> {
             {
                 let mut payload = None;
                 let mut signature = None;
-                let mut protected = None;
 
                 while let Some((key, val)) = map.next_entry::<&str, &[u8]>()? {
                     let val = base64::decode_config(val, base64::URL_SAFE_NO_PAD)
                         .map_err(A::Error::custom)?;
 
                     match key {
-                        "payload" => payload = Some(T::deserialize(val.into_deserializer())?),
-                        "signature" => signature = Some(val),
-                        "protected" => {
-                            protected = Some(Protected::deserialize(val.into_deserializer())?)
+                        "payload" => {
+                            payload = Some(serde_json::from_slice(&*val).map_err(A::Error::custom)?)
                         }
+                        "signature" => signature = Some(val),
                         _ => {}
                     }
                 }
 
-                match (payload, signature, protected) {
-                    (Some(payload), Some(signature), Some(protected)) => Ok(SignedRequest {
-                        payload,
-                        signature,
-                        protected,
-                    }),
+                match (payload, signature) {
+                    (Some(payload), Some(signature)) => Ok(SignedRequest { payload, signature }),
                     _ => Err(DeError::missing_field("payload, signature, protected")),
                 }
             }
@@ -138,14 +137,11 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for SignedRequest<T> {
 
         deserializer.deserialize_struct(
             "SignedRequest",
-            &["payload", "signature", "protected"],
+            &["payload", "signature"],
             SignedRequestVisitor(PhantomData),
         )
     }
 }
-
-#[derive(Deserialize)]
-struct Protected {}
 
 async fn assert_jose<B>(req: Request<B>, next: Next<B>) -> Result<Response, StatusCode> {
     static APPLICATION_JOSE_JSON: HeaderValue = HeaderValue::from_static("application/jose+json");
