@@ -99,7 +99,7 @@ impl<'de, T: DeserializeOwned> Deserialize<'de> for SignedRequest<T> {
             type Value = SignedRequest<T>;
 
             fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
-                write!(formatter, "a signed request")
+                formatter.write_str("a signed request")
             }
 
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
